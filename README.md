@@ -1,3 +1,9 @@
+<!--
+Game Hacking Cheat Sheet: Advanced reverse engineering, memory editing, and anti-cheat evasion techniques.
+Comprehensive guide covering Unity/Unreal engine hacking, aimbots, memory analysis, Frida instrumentation, and exploit development.
+Topics: reverse-engineering, game-security, memory-editing, anti-cheat-bypass, frida, cheat-engine, exploitation, ethical-hacking.
+Keyword: game hacking cheat sheet, reverse engineering games, anti-cheat evasion, memory editing, game security research, ethical game hacking, Unity hacking, Unreal Engine reverse engineering, Frida game instrumentation, cheat engine tutorials, exploit development games, lena151 reverse engineering tuts, game modding security
+-->
 # Game Hacking Cheat Sheet
 
 Welcome to the definitive guide for game hacking. This repository compiles advanced techniques, tools, and strategies for dissecting and manipulating games, intended strictly for authorized testing, education, and Capture The Flag (CTF) research.
