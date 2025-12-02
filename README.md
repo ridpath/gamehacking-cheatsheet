@@ -382,11 +382,6 @@ reverse engineering guide GitHub, best game hacking tutorial 2025
   - [Tool Pairings](#tool-pairings)
   - [Hands On Game Hacking Labs \& Guided Practice](#hands-on-game-hacking-labs--guided-practice)
   - [Game Hacking Tool Stack {#essential-tool-stack}](#game-hacking-tool-stack-essential-tool-stack)
-  - [Game Process \& Anti-Cheat Tools {#anti-cheat-tools}](#game-process--anti-cheat-tools-anti-cheat-tools)
-  - [Memory Mapping \& Pointer Structures {#memory-tools}](#memory-mapping--pointer-structures-memory-tools)
-  - [Game Engine Reversing {#engine-tools}](#game-engine-reversing-engine-tools)
-  - [Graphics Hooking \& ESP Overlays {#graphics-tools}](#graphics-hooking--esp-overlays-graphics-tools)
-  - [Binary Reversing \& Patching {#re-tools}](#binary-reversing--patching-re-tools)
   - [Documentation Shortcuts {#tool-docs}](#documentation-shortcuts-tool-docs)
   - [Learning Pathways — Choose Your Specialization](#learning-pathways--choose-your-specialization)
   - [Legal \& Ethical Use](#legal--ethical-use)
@@ -4035,7 +4030,7 @@ pwn adventure reverse engineering, online game exploit development
 ## Game Hacking Tool Stack {#essential-tool-stack}
 
 The must have loadout for reversing, memory exploitation, and anti-cheat bypass.
-## 🔧 Full Game Hacking Toolchain — Reverse Engineering, Memory Editing, Anti-Cheat, Engine RE
+## Full Game Hacking Toolchain — Reverse Engineering, Memory Editing, Anti-Cheat, Engine RE
 
 | Tool | Category / Purpose | Why Game Hackers Use It | Link |
 |------|-------------------|------------------------|------|
