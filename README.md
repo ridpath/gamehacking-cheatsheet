@@ -215,7 +215,6 @@ reverse engineering guide GitHub, best game hacking tutorial 2025
     - [Common Loader Signatures](#common-loader-signatures)
     - [DRM Loader Fuzzing / Mutation](#drm-loader-fuzzing--mutation)
     - [DRM Tooling Ecosystem](#drm-tooling-ecosystem)
-  - [| LIEF | Programmatic PE patching |](#-lief--programmatic-pe-patching-)
   - [AI/ML Augmentations](#aiml-augmentations)
     - [Core Techniques](#core-techniques-10)
     - [Generative Cheats](#generative-cheats)
@@ -771,7 +770,7 @@ while (lua_next(L, LUA_GLOBALSINDEX)) {
 ### Dynamic Lua Hijacking (Frida)
 
 ```js
-Interceptor.attach(Module.findExportByName("lua_pcall"), {
+Interceptor.attach(Module.findExportByName(null, "lua_pcall"), {
     onEnter(args) {
         console.log("Calling Lua:", args[1]);
     }
@@ -1600,7 +1599,7 @@ with open("modded.replay", "wb") as f:
 
 ---
 
-### Defense andf Mitigation
+### Defense and Mitigation
 
 | Weakness              | Defense                                |
 |-----------------------|----------------------------------------|
@@ -1960,7 +1959,7 @@ Automate and break games with these tools.
 
 - **YOLOv7 + DeepSORT**: Real-time aimbot tracking.
   ```python
-  model = torch.hub.load('ultralytics/yolov5', 'yolov7')
+  model = torch.hub.load('WongKinYiu/yolov7', 'custom', 'yolov7.pt')
   results = model(frame)
   targets = results.pandas().xyxy[0]  # Extract enemy bounding boxes
   ```
@@ -2209,6 +2208,7 @@ Combine with AFL++ to fuzz staged binaries.
 | TitanHide | Hide debugger from anti-debug checks |
 | IDA Pro + HexRays | Advanced disasm and pseudocode |
 | LIEF | Programmatic PE patching |
+
 ---
 
 ## AI/ML Augmentations
